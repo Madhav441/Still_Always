@@ -21,13 +21,6 @@ from typing import List
 
 import streamlit as st
 
-# requests is only needed for the optional Discord webhook ping.
-try:
-    import requests  # noqa: F401
-    HAS_REQUESTS = True
-except Exception:
-    HAS_REQUESTS = False
-
 
 # ---------------------------------------------------------------------------
 # Configuration - edit these placeholders before deploying.
@@ -545,25 +538,6 @@ def caption_from_filename(path_or_url: str) -> str:
     )
 
 
-def send_discord_ping(message: str) -> tuple[bool, str]:
-    """Send a webhook ping if DISCORD_WEBHOOK_URL is configured. Returns (ok, info)."""
-    if not HAS_REQUESTS:
-        return False, "requests library not available"
-    try:
-        webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
-    except Exception:
-        webhook = ""
-    if not webhook:
-        return False, "no webhook configured"
-    try:
-        import requests
-        resp = requests.post(webhook, json={"content": message}, timeout=6)
-        if 200 <= resp.status_code < 300:
-            return True, "ok"
-        return False, f"status {resp.status_code}"
-    except Exception as e:
-        return False, str(e)
-
 
 def get_admin_password() -> str:
     """Read admin password from secrets, falling back to the local constant."""
@@ -754,7 +728,7 @@ def render_connect_section() -> None:
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="section-sub">All of these are optional. No notifications go anywhere unless you tap something.</div>',
+        '<div class="section-sub">All of these are optional. No pressure to reach out.</div>',
         unsafe_allow_html=True,
     )
 
@@ -777,38 +751,32 @@ def render_connect_section() -> None:
     )
     st.markdown(f'<div class="connect-grid">{cards_html}</div>', unsafe_allow_html=True)
 
-    # Optional "Send a ping" button. Uses Discord webhook if configured;
-    # otherwise gracefully falls back to a mailto link rendered as a pill.
-    try:
-        webhook_configured = bool(st.secrets.get("DISCORD_WEBHOOK_URL", ""))
-    except Exception:
-        webhook_configured = False
-
-    st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
-
-    if webhook_configured:
-        c1, c2 = st.columns([1, 3])
-        with c1:
-            if st.button("Send a ping", key="ping_btn"):
-                ok, _info = send_discord_ping(
-                    "Someone visited the page and sent a quiet ping. ✨"
-                )
-                if ok:
-                    st.success("Sent. Thank you.")
-                else:
-                    # Stay graceful - never leak details to the visitor.
-                    st.info("Saved as a wish. Thank you for stopping by.")
-        with c2:
-            st.markdown(
-                '<div class="gentle-note">Only if you want to. No pressure.</div>',
-                unsafe_allow_html=True,
-            )
-    else:
-        st.markdown(
-            f'<a class="pill" href="{mailto}">Send a ping ✉</a>'
-            '<div class="gentle-note">Only if you want to. No pressure.</div>',
-            unsafe_allow_html=True,
-        )
+    # Google Calendar embed
+    st.markdown("<div style='height:1.6rem;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        '<div style="font-family:\'Cormorant Garamond\',serif;font-size:1.15rem;'
+        'color:rgba(246,239,233,0.75);margin-bottom:0.6rem;">When I\'m around</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <div style="border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,0.10);
+                    box-shadow:0 20px 40px -30px rgba(0,0,0,0.5);">
+            <iframe src="https://calendar.google.com/calendar/embed?src=64db8bd6c7d706543be719aa533ceb67cffb877cd0816312d31ddc51a6dd6a72%40group.calendar.google.com&ctz=Australia%2FSydney&bgcolor=%2315101c&showTitle=0&showNav=1&showDate=1&showPrint=0&showTabs=0&showCalendars=0&mode=WEEK"
+                style="border:0;display:block;filter:invert(1) hue-rotate(180deg) brightness(0.85) saturate(0.9);"
+                width="100%" height="420" frameborder="0" scrolling="no">
+            </iframe>
+        </div>
+        <div class="gentle-note" style="margin-top:0.6rem;">
+            Set this calendar to Public for viewing, and share with edit access for adding events.
+        </div>
+        <a class="pill" style="margin-top:0.8rem;display:inline-block;" target="_blank" rel="noopener"
+           href="https://calendar.google.com/calendar/u/0?cid=NjRkYjhiZDZjN2Q3MDY1NDNiZTcxOWFhNTMzY2ViNjdjZmZiODc3Y2QwODE2MzEyZDMxZGRjNTFhNmRkNmE3MkBncm91cC5jYWxlbmRhci5nb29nbGUuY29t">
+            Add or edit events ↗
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_ticker() -> None:
