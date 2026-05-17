@@ -1,9 +1,9 @@
 # Streamlit theme - tuned to match the custom CSS in app.py.
 [theme]
 base = "dark"
-primaryColor = "#e7a8d6"
-backgroundColor = "#15101c"
-secondaryBackgroundColor = "#1d1530"
+primaryColor = "#f08aa8"
+backgroundColor = "#1a1014"
+secondaryBackgroundColor = "#2a1620"
 textColor = "#f6efe9"
 font = "sans serif"
 

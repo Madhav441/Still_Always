@@ -72,7 +72,7 @@ st.set_page_config(
     page_title="Still, Always.",
     page_icon="✨",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 
@@ -89,19 +89,21 @@ def inject_css() -> None:
             color: #f6efe9;
         }
 
-        /* ---------- Global background ---------- */
+        /* ---------- Global background (warm candlelit palette) ---------- */
         .stApp {
             background:
-                radial-gradient(1200px 600px at 10% -10%, rgba(255, 183, 178, 0.18), transparent 60%),
-                radial-gradient(900px 500px at 110% 10%, rgba(176, 196, 255, 0.18), transparent 55%),
-                radial-gradient(800px 600px at 50% 120%, rgba(255, 210, 233, 0.16), transparent 60%),
-                linear-gradient(180deg, #15101c 0%, #1d1530 50%, #120c1b 100%);
+                radial-gradient(1200px 600px at 10% -10%, rgba(255, 178, 140, 0.24), transparent 60%),
+                radial-gradient(900px 500px at 110% 10%, rgba(255, 196, 160, 0.20), transparent 55%),
+                radial-gradient(800px 600px at 50% 120%, rgba(255, 168, 184, 0.18), transparent 60%),
+                linear-gradient(180deg, #1a1014 0%, #2a1620 50%, #160c10 100%);
             background-attachment: fixed;
         }
 
-        /* Remove default Streamlit chrome */
+        /* Remove default Streamlit chrome (but keep the sidebar toggle visible) */
         #MainMenu { visibility: hidden; }
-        header { visibility: hidden; }
+        header [data-testid="stToolbar"] { visibility: hidden; }
+        header [data-testid="stDecoration"] { visibility: hidden; }
+        header { background: transparent; }
         footer { visibility: hidden; }
         .block-container {
             padding-top: 2.5rem;
@@ -121,7 +123,7 @@ def inject_css() -> None:
             position: absolute;
             bottom: -40px;
             font-size: 14px;
-            color: rgba(255, 200, 210, 0.35);
+            color: rgba(255, 210, 180, 0.40);
             animation: drift linear infinite;
         }
         @keyframes drift {
@@ -148,8 +150,8 @@ def inject_css() -> None:
             position: absolute;
             inset: -40%;
             background: conic-gradient(from 90deg at 50% 50%,
-                rgba(255,183,178,0.18), rgba(176,196,255,0.18),
-                rgba(255,210,233,0.18), rgba(255,183,178,0.18));
+                rgba(255,178,140,0.22), rgba(255,210,170,0.20),
+                rgba(255,168,184,0.22), rgba(255,178,140,0.22));
             filter: blur(60px);
             opacity: 0.45;
             animation: spin 25s linear infinite;
@@ -165,7 +167,7 @@ def inject_css() -> None:
             letter-spacing: -0.02em;
             margin: 0 0 0.5rem 0;
             line-height: 1.05;
-            background: linear-gradient(180deg, #fff7ef 0%, #ffd8e1 100%);
+            background: linear-gradient(180deg, #fff7ec 0%, #ffd0b8 100%);
             -webkit-background-clip: text;
             background-clip: text;
             color: transparent;
@@ -189,17 +191,17 @@ def inject_css() -> None:
             display: inline-block;
             padding: 0.75rem 1.6rem;
             border-radius: 999px;
-            background: linear-gradient(135deg, #ffb7b2, #e7a8d6);
-            color: #2a1b2b !important;
+            background: linear-gradient(135deg, #ffb380, #f08aa8);
+            color: #2a1612 !important;
             font-weight: 600;
             text-decoration: none !important;
-            box-shadow: 0 10px 30px -10px rgba(231,168,214,0.6);
+            box-shadow: 0 10px 30px -10px rgba(240,138,168,0.55);
             transition: transform 0.2s ease, box-shadow 0.2s ease;
             border: 0;
         }
         .pill:hover {
             transform: translateY(-2px);
-            box-shadow: 0 16px 36px -12px rgba(231,168,214,0.75);
+            box-shadow: 0 16px 36px -12px rgba(240,138,168,0.72);
         }
         .pill.ghost {
             background: rgba(255,255,255,0.08);
@@ -375,21 +377,21 @@ def inject_css() -> None:
 
         /* ---------- Streamlit button override (for ping + shuffle) ---------- */
         div.stButton > button {
-            background: linear-gradient(135deg, #ffb7b2, #e7a8d6);
-            color: #2a1b2b;
+            background: linear-gradient(135deg, #ffb380, #f08aa8);
+            color: #2a1612;
             border: 0;
             border-radius: 999px;
             padding: 0.55rem 1.4rem;
             font-weight: 600;
-            box-shadow: 0 10px 30px -12px rgba(231,168,214,0.55);
+            box-shadow: 0 10px 30px -12px rgba(240,138,168,0.55);
             transition: transform 0.15s ease, box-shadow 0.2s ease;
         }
         div.stButton > button:hover {
             transform: translateY(-2px);
-            box-shadow: 0 16px 34px -14px rgba(231,168,214,0.7);
+            box-shadow: 0 16px 34px -14px rgba(240,138,168,0.72);
             color: #2a1b2b;
         }
-        div.stButton > button:focus { color: #2a1b2b; }
+        div.stButton > button:focus { color: #2a1612; }
 
         /* ---------- Ticker (sticky bottom) ---------- */
         .ticker-wrap {
@@ -397,7 +399,7 @@ def inject_css() -> None:
             left: 0; right: 0; bottom: 0;
             z-index: 50;
             padding: 0.55rem 1rem;
-            background: linear-gradient(180deg, rgba(20,14,30,0) 0%, rgba(15,10,22,0.92) 40%, rgba(15,10,22,0.96) 100%);
+            background: linear-gradient(180deg, rgba(26,16,20,0) 0%, rgba(22,12,16,0.92) 40%, rgba(22,12,16,0.96) 100%);
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
             border-top: 1px solid rgba(255,255,255,0.08);
@@ -414,7 +416,7 @@ def inject_css() -> None:
             font-size: 0.7rem;
             letter-spacing: 0.22em;
             text-transform: uppercase;
-            color: rgba(255, 200, 210, 0.85);
+            color: rgba(255, 210, 180, 0.90);
             white-space: nowrap;
             padding: 0.25rem 0.7rem;
             background: rgba(255,255,255,0.06);
@@ -455,7 +457,7 @@ def inject_css() -> None:
         }
 
         /* ---------- Misc ---------- */
-        a { color: #ffd6dc; }
+        a { color: #ffd0b8; }
         hr { border-color: rgba(255,255,255,0.08); }
 
         /* Mobile tuning */
