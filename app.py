@@ -13,6 +13,8 @@ Deploy on Streamlit Community Cloud:
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import random
 from datetime import date
@@ -20,6 +22,14 @@ from pathlib import Path
 from typing import List
 
 import streamlit as st
+
+# Pillow is used to downscale + recompress local photos before inlining them
+# as base64 data URIs. The fallback path still works without it.
+try:
+    from PIL import Image as PILImage
+    HAS_PIL = True
+except Exception:
+    HAS_PIL = False
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +317,113 @@ def inject_css() -> None:
             margin-left: 0.5rem;
         }
 
+        /* ---------- Horizontal gallery carousel ---------- */
+        .scroll-hint {
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+            font-size: 0.72rem;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: rgba(246, 239, 233, 0.5);
+            margin: 0.2rem 0 0.7rem 0;
+        }
+        .scroll-hint .dot {
+            width: 6px; height: 6px; border-radius: 50%;
+            background: rgba(255, 178, 140, 0.7);
+            animation: hint-pulse 2.2s ease-in-out infinite;
+        }
+        @keyframes hint-pulse {
+            0%,100% { opacity: 0.35; transform: scale(1); }
+            50%     { opacity: 1;    transform: scale(1.4); }
+        }
+        .gallery-strip-wrap {
+            position: relative;
+        }
+        /* Soft fades on either edge so the scroll strip feels infinite */
+        .gallery-strip-wrap::before,
+        .gallery-strip-wrap::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            bottom: 18px;
+            width: 56px;
+            pointer-events: none;
+            z-index: 2;
+            border-radius: 18px;
+        }
+        .gallery-strip-wrap::before {
+            left: 0;
+            background: linear-gradient(90deg, rgba(26,16,20,0.95), rgba(26,16,20,0));
+        }
+        .gallery-strip-wrap::after {
+            right: 0;
+            background: linear-gradient(270deg, rgba(26,16,20,0.95), rgba(26,16,20,0));
+        }
+        .gallery-strip {
+            display: flex;
+            gap: 1.1rem;
+            overflow-x: auto;
+            overflow-y: visible;
+            padding: 0.5rem 1.4rem 1rem 1.4rem;
+            scroll-snap-type: x mandatory;
+            scroll-padding-left: 1.4rem;
+            scroll-behavior: smooth;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 178, 140, 0.55) rgba(255,255,255,0.06);
+        }
+        .gallery-strip::-webkit-scrollbar { height: 8px; }
+        .gallery-strip::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.05);
+            border-radius: 999px;
+        }
+        .gallery-strip::-webkit-scrollbar-thumb {
+            background: linear-gradient(90deg, rgba(255,178,140,0.65), rgba(240,138,168,0.65));
+            border-radius: 999px;
+        }
+        .gallery-card {
+            flex: 0 0 auto;
+            width: clamp(220px, 28vw, 320px);
+            aspect-ratio: 3 / 4;
+            position: relative;
+            border-radius: 18px;
+            overflow: hidden;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.10);
+            box-shadow: 0 16px 34px -20px rgba(0,0,0,0.55);
+            scroll-snap-align: start;
+            transition: transform 0.35s ease, box-shadow 0.35s ease;
+        }
+        .gallery-card img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            transition: transform 0.7s ease;
+        }
+        .gallery-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 22px 44px -18px rgba(0,0,0,0.6);
+        }
+        .gallery-card:hover img { transform: scale(1.05); }
+        .gallery-card .photo-caption {
+            position: absolute;
+            inset: auto 0 0 0;
+            padding: 0.65rem 0.9rem 0.85rem 0.9rem;
+            background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.62) 100%);
+            color: #fdf6ef;
+            font-family: 'Cormorant Garamond', serif;
+            font-style: italic;
+            font-size: 0.95rem;
+            letter-spacing: 0.01em;
+        }
+        @media (max-width: 640px) {
+            .gallery-card { width: 74vw; }
+            .gallery-strip { padding-left: 1rem; padding-right: 1rem; scroll-padding-left: 1rem; }
+            .gallery-strip-wrap::before,
+            .gallery-strip-wrap::after { width: 32px; }
+        }
+
         /* ---------- Timeline ---------- */
         .timeline {
             display: grid;
@@ -525,6 +642,38 @@ def load_local_photos() -> List[Path]:
     return sorted([p for p in PHOTO_DIR.iterdir() if p.suffix.lower() in exts])
 
 
+@st.cache_data(show_spinner=False)
+def _encode_local_image(path_str: str, _mtime: float, max_dim: int = 1400, quality: int = 82) -> str:
+    """Read a local image, optionally downscale, return a base64 data URI.
+
+    Cached on (path, mtime) so re-uploads invalidate automatically and the
+    Streamlit rerun loop doesn't re-encode every photo on every interaction.
+    """
+    path = Path(path_str)
+    if HAS_PIL:
+        with PILImage.open(path) as im:
+            if im.mode in ("RGBA", "LA", "P"):
+                im = im.convert("RGB")
+            im.thumbnail((max_dim, max_dim), PILImage.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=quality, optimize=True)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    # Fallback: inline raw bytes (no resize). Page weight grows fast, but it works.
+    mime = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png",  ".webp": "image/webp",
+    }.get(path.suffix.lower(), "application/octet-stream")
+    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def image_to_data_uri(path: Path) -> str:
+    """Safe wrapper around _encode_local_image that never raises."""
+    try:
+        return _encode_local_image(str(path), path.stat().st_mtime)
+    except Exception:
+        return ""
+
+
 def caption_from_filename(path_or_url: str) -> str:
     """Make a soft caption from a filename or URL stem."""
     name = Path(path_or_url).stem
@@ -604,35 +753,34 @@ def render_gallery() -> None:
         )
         return
 
-    # Build the grid. Local files are embedded via Streamlit's image pipeline
-    # using columns so they render reliably; URL photos use plain <img> tags
-    # inside the same CSS card style.
-    cols_per_row = 4
-    items: List[tuple[str, str, str]] = []  # (kind, src, caption)
-    for p in local_photos:
-        items.append(("local", str(p), caption_from_filename(p.name)))
-    for u in url_photos:
-        items.append(("url", u, caption_from_filename(u)))
+    # Build uniform cards for both local files and URL photos so the strip
+    # has a consistent rhythm regardless of where the image came from.
+    cards: List[str] = []
 
-    for i in range(0, len(items), cols_per_row):
-        row = items[i : i + cols_per_row]
-        cols = st.columns(len(row), gap="small")
-        for col, (kind, src, cap) in zip(cols, row):
-            with col:
-                if kind == "local":
-                    # st.image handles local files cleanly across formats.
-                    st.image(src, use_container_width=True, caption=cap or None)
-                else:
-                    safe_cap = cap.replace("<", "&lt;").replace(">", "&gt;")
-                    st.markdown(
-                        f"""
-                        <div class="photo-card">
-                            <img src="{src}" alt="{safe_cap}" loading="lazy"/>
-                            {f'<div class="photo-caption">{safe_cap}</div>' if safe_cap else ''}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+    def _card(src: str, cap: str) -> str:
+        safe_cap = cap.replace("<", "&lt;").replace(">", "&gt;")
+        caption_html = f'<div class="photo-caption">{safe_cap}</div>' if safe_cap else ""
+        return (
+            '<div class="gallery-card">'
+            f'<img src="{src}" alt="{safe_cap}" loading="lazy"/>'
+            f"{caption_html}"
+            "</div>"
+        )
+
+    for p in local_photos:
+        data_uri = image_to_data_uri(p)
+        if not data_uri:
+            continue
+        cards.append(_card(data_uri, caption_from_filename(p.name)))
+
+    for u in url_photos:
+        cards.append(_card(u, caption_from_filename(u)))
+
+    st.markdown(
+        '<div class="scroll-hint"><span class="dot"></span>scroll &middot; swipe &middot; browse</div>'
+        f'<div class="gallery-strip-wrap"><div class="gallery-strip">{"".join(cards)}</div></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_timeline() -> None:
