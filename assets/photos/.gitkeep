@@ -1,0 +1,3 @@
+# Drop .jpg, .jpeg, .png, or .webp files in this folder.
+# They will appear in the gallery automatically, sorted by filename.
+# Filenames become soft captions (underscores and dashes become spaces).
