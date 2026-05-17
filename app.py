@@ -13,6 +13,8 @@ Deploy on Streamlit Community Cloud:
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import random
 from datetime import date
@@ -20,6 +22,14 @@ from pathlib import Path
 from typing import List
 
 import streamlit as st
+
+# Pillow is used to downscale + recompress local photos before inlining them
+# as base64 data URIs. The fallback path still works without it.
+try:
+    from PIL import Image as PILImage
+    HAS_PIL = True
+except Exception:
+    HAS_PIL = False
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +60,67 @@ LOCAL_FALLBACK_ADMIN_PASSWORD = "Koibito"
 ROOT = Path(__file__).parent
 PHOTO_DIR = ROOT / "assets" / "photos"
 THOUGHTS_FILE = ROOT / "thoughts.json"
+
+# Inline SVG icons (currentColor-based so they inherit the parent text color).
+# Kept lightweight so the page stays fast and offline-safe.
+ICONS = {
+    "instagram": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'
+        '<rect x="2" y="2" width="20" height="20" rx="5"/>'
+        '<path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/>'
+        '<line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/></svg>'
+    ),
+    "discord": (
+        '<svg viewBox="0 0 24 24" fill="currentColor">'
+        '<path d="M19.27 5.33C17.94 4.71 16.5 4.26 15 4a.09.09 0 0 0-.07.03c-.18.33-.39.76'
+        '-.53 1.09a16.09 16.09 0 0 0-4.8 0c-.14-.34-.35-.76-.54-1.09c-.01-.02-.04-.03-.07-.03'
+        'c-1.5.26-2.93.71-4.27 1.33c-.01 0-.02.01-.03.02c-2.72 4.07-3.47 8.03-3.1 11.95'
+        'c0 .02.01.04.03.05c1.8 1.32 3.53 2.12 5.24 2.65c.03.01.06 0 .07-.02c.4-.55.76'
+        '-1.13 1.07-1.74c.02-.04 0-.08-.04-.09c-.57-.22-1.11-.48-1.64-.78c-.04-.02-.04'
+        '-.08-.01-.11c.11-.08.22-.17.33-.25c.02-.02.05-.02.07-.01c3.44 1.57 7.15 1.57 '
+        '10.55 0c.02-.01.05 0 .07.01c.11.09.22.17.33.26c.04.03.04.09-.01.11c-.52.31'
+        '-1.07.56-1.64.78c-.04.01-.05.06-.04.09c.32.61.68 1.19 1.07 1.74c.03.01.06.02.09.01'
+        'c1.72-.53 3.45-1.33 5.25-2.65c.02-.01.03-.03.03-.05c.44-4.53-.73-8.46-3.1'
+        '-11.95c-.01-.01-.02-.02-.04-.02zM8.52 14.91c-1.03 0-1.89-.95-1.89-2.12s.84'
+        '-2.12 1.89-2.12c1.06 0 1.9.96 1.89 2.12c0 1.17-.84 2.12-1.89 2.12zm6.97 0'
+        'c-1.03 0-1.89-.95-1.89-2.12s.84-2.12 1.89-2.12c1.06 0 1.9.96 1.89 2.12c0 '
+        '1.17-.83 2.12-1.89 2.12z"/></svg>'
+    ),
+    "mail": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'
+        '<rect width="20" height="16" x="2" y="4" rx="2"/>'
+        '<path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>'
+    ),
+    "whatsapp": (
+        '<svg viewBox="0 0 24 24" fill="currentColor">'
+        '<path d="M17.6 6.32A7.85 7.85 0 0 0 12.05 4 7.94 7.94 0 0 0 5.1 15.93L4 20'
+        'l4.18-1.09a7.93 7.93 0 0 0 3.86 1h.01a7.94 7.94 0 0 0 7.94-7.94c0-2.12-.83'
+        '-4.12-2.39-5.65zm-5.55 12.21a6.58 6.58 0 0 1-3.36-.92l-.24-.14-2.49.65'
+        '.67-2.42-.16-.25a6.59 6.59 0 1 1 12.2-3.52c0 3.64-2.97 6.6-6.6 6.6h-.02z'
+        'm3.62-4.94c-.2-.1-1.17-.58-1.36-.64s-.32-.1-.45.1c-.13.2-.51.64-.62.77'
+        'c-.12.13-.23.15-.42.05c-.2-.1-.84-.31-1.6-.99c-.59-.53-.99-1.18-1.1-1.38'
+        'c-.12-.2-.01-.31.09-.41c.09-.09.2-.23.3-.35c.1-.12.13-.2.2-.33c.07-.13'
+        '.03-.25-.02-.35c-.05-.1-.45-1.09-.62-1.49c-.16-.39-.33-.34-.45-.34c-.12 0'
+        '-.25-.02-.38-.02s-.35.05-.53.25c-.18.2-.7.69-.7 1.67c0 .98.72 1.94.82 '
+        '2.07c.1.13 1.4 2.14 3.4 3c.48.21.85.33 1.14.42c.48.15.92.13 1.26.08c.39'
+        '-.06 1.17-.48 1.34-.94c.16-.46.16-.85.12-.94c-.05-.08-.18-.13-.38-.23z"/></svg>'
+    ),
+    "quote": (
+        '<svg viewBox="0 0 24 24" fill="currentColor">'
+        '<path d="M7.17 6A5.17 5.17 0 0 0 2 11.17V18h6.83v-6.83H5.5A1.67 1.67 0 0 1 7.17 9.5z"/>'
+        '<path d="M17.17 6A5.17 5.17 0 0 0 12 11.17V18h6.83v-6.83H15.5a1.67 1.67 0 0 1 1.67-1.67z"/></svg>'
+    ),
+    "music": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M9 18V5l12-2v13"/>'
+        '<circle cx="6" cy="18" r="3"/>'
+        '<circle cx="18" cy="16" r="3"/></svg>'
+    ),
+}
+
 
 # Quotes written for this app - not famous copyrighted lines.
 MEMORY_QUOTES = [
@@ -99,11 +170,13 @@ def inject_css() -> None:
             background-attachment: fixed;
         }
 
-        /* Remove default Streamlit chrome (but keep the sidebar toggle visible) */
+        /* Streamlit chrome: make the header transparent so the warm gradient
+           shows through (no black bar) but keep the sidebar toggle visible. */
         #MainMenu { visibility: hidden; }
-        header [data-testid="stToolbar"] { visibility: hidden; }
-        header [data-testid="stDecoration"] { visibility: hidden; }
-        header { background: transparent; }
+        [data-testid="stHeader"] {
+            background: transparent !important;
+        }
+        [data-testid="stDecoration"] { display: none !important; }
         footer { visibility: hidden; }
         .block-container {
             padding-top: 2.5rem;
@@ -307,6 +380,206 @@ def inject_css() -> None:
             margin-left: 0.5rem;
         }
 
+        /* ---------- Little-things cards ---------- */
+        .little-card {
+            position: relative;
+            overflow: hidden;
+        }
+        /* Warm hairline accent across the top edge */
+        .little-card::before {
+            content: "";
+            position: absolute;
+            inset: 0 0 auto 0;
+            height: 2px;
+            background: linear-gradient(90deg,
+                rgba(255,178,140,0.0),
+                rgba(255,178,140,0.7) 30%,
+                rgba(240,138,168,0.7) 70%,
+                rgba(240,138,168,0.0));
+        }
+        .little-eyebrow {
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+            font-size: 0.7rem;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: rgba(246, 239, 233, 0.55);
+            margin-bottom: 0.5rem;
+        }
+        .little-eyebrow svg {
+            width: 14px;
+            height: 14px;
+            opacity: 0.85;
+            color: #ffd0b8;
+        }
+        .little-title {
+            font-family: 'Cormorant Garamond', serif;
+            font-size: 1.7rem;
+            color: #fff5ec;
+            line-height: 1.2;
+            margin-bottom: 0.25rem;
+        }
+        .little-sub {
+            color: rgba(246, 239, 233, 0.62);
+            font-size: 0.92rem;
+            margin-bottom: 1rem;
+        }
+        .pulled-quote {
+            position: relative;
+            padding: 0.5rem 0.6rem 0.5rem 1.1rem;
+            border-left: 2px solid rgba(255, 178, 140, 0.55);
+            font-family: 'Cormorant Garamond', serif;
+            font-style: italic;
+            font-size: 1.2rem;
+            line-height: 1.55;
+            color: #fdf6ef;
+            margin-top: 0.4rem;
+        }
+        .pulled-quote .quote-mark {
+            position: absolute;
+            top: -1.8rem;
+            right: 0.1rem;
+            font-family: 'Cormorant Garamond', serif;
+            font-size: 5rem;
+            line-height: 1;
+            color: rgba(255, 178, 140, 0.16);
+            pointer-events: none;
+            user-select: none;
+            font-weight: 700;
+        }
+        .vibe-visualizer {
+            display: flex;
+            align-items: flex-end;
+            gap: 4px;
+            height: 28px;
+            margin: 0.2rem 0 1rem 0;
+        }
+        .vibe-visualizer span {
+            display: block;
+            width: 4px;
+            border-radius: 2px;
+            background: linear-gradient(180deg, rgba(255,178,140,0.9), rgba(240,138,168,0.9));
+            transform-origin: bottom;
+            animation: bar-bounce 1.3s ease-in-out infinite;
+        }
+        .vibe-visualizer span:nth-child(1) { animation-delay: 0.00s; height: 60%; }
+        .vibe-visualizer span:nth-child(2) { animation-delay: 0.15s; height: 90%; }
+        .vibe-visualizer span:nth-child(3) { animation-delay: 0.30s; height: 45%; }
+        .vibe-visualizer span:nth-child(4) { animation-delay: 0.45s; height: 75%; }
+        .vibe-visualizer span:nth-child(5) { animation-delay: 0.60s; height: 55%; }
+        @keyframes bar-bounce {
+            0%, 100% { transform: scaleY(0.5); }
+            50%      { transform: scaleY(1); }
+        }
+
+        /* ---------- Horizontal gallery carousel ---------- */
+        .scroll-hint {
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+            font-size: 0.72rem;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: rgba(246, 239, 233, 0.5);
+            margin: 0.2rem 0 0.7rem 0;
+        }
+        .scroll-hint .dot {
+            width: 6px; height: 6px; border-radius: 50%;
+            background: rgba(255, 178, 140, 0.7);
+            animation: hint-pulse 2.2s ease-in-out infinite;
+        }
+        @keyframes hint-pulse {
+            0%,100% { opacity: 0.35; transform: scale(1); }
+            50%     { opacity: 1;    transform: scale(1.4); }
+        }
+        .gallery-strip-wrap {
+            position: relative;
+        }
+        /* Soft fades on either edge so the scroll strip feels infinite */
+        .gallery-strip-wrap::before,
+        .gallery-strip-wrap::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            bottom: 18px;
+            width: 56px;
+            pointer-events: none;
+            z-index: 2;
+            border-radius: 18px;
+        }
+        .gallery-strip-wrap::before {
+            left: 0;
+            background: linear-gradient(90deg, rgba(26,16,20,0.95), rgba(26,16,20,0));
+        }
+        .gallery-strip-wrap::after {
+            right: 0;
+            background: linear-gradient(270deg, rgba(26,16,20,0.95), rgba(26,16,20,0));
+        }
+        .gallery-strip {
+            display: flex;
+            gap: 1.1rem;
+            overflow-x: auto;
+            overflow-y: visible;
+            padding: 0.5rem 1.4rem 1rem 1.4rem;
+            scroll-snap-type: x mandatory;
+            scroll-padding-left: 1.4rem;
+            scroll-behavior: smooth;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 178, 140, 0.55) rgba(255,255,255,0.06);
+        }
+        .gallery-strip::-webkit-scrollbar { height: 8px; }
+        .gallery-strip::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.05);
+            border-radius: 999px;
+        }
+        .gallery-strip::-webkit-scrollbar-thumb {
+            background: linear-gradient(90deg, rgba(255,178,140,0.65), rgba(240,138,168,0.65));
+            border-radius: 999px;
+        }
+        .gallery-card {
+            flex: 0 0 auto;
+            width: clamp(220px, 28vw, 320px);
+            aspect-ratio: 3 / 4;
+            position: relative;
+            border-radius: 18px;
+            overflow: hidden;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.10);
+            box-shadow: 0 16px 34px -20px rgba(0,0,0,0.55);
+            scroll-snap-align: start;
+            transition: transform 0.35s ease, box-shadow 0.35s ease;
+        }
+        .gallery-card img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            transition: transform 0.7s ease;
+        }
+        .gallery-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 22px 44px -18px rgba(0,0,0,0.6);
+        }
+        .gallery-card:hover img { transform: scale(1.05); }
+        .gallery-card .photo-caption {
+            position: absolute;
+            inset: auto 0 0 0;
+            padding: 0.65rem 0.9rem 0.85rem 0.9rem;
+            background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.62) 100%);
+            color: #fdf6ef;
+            font-family: 'Cormorant Garamond', serif;
+            font-style: italic;
+            font-size: 0.95rem;
+            letter-spacing: 0.01em;
+        }
+        @media (max-width: 640px) {
+            .gallery-card { width: 74vw; }
+            .gallery-strip { padding-left: 1rem; padding-right: 1rem; scroll-padding-left: 1rem; }
+            .gallery-strip-wrap::before,
+            .gallery-strip-wrap::after { width: 32px; }
+        }
+
         /* ---------- Timeline ---------- */
         .timeline {
             display: grid;
@@ -343,30 +616,58 @@ def inject_css() -> None:
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 0.9rem;
         }
+        .connect-grid {
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)) !important;
+        }
         .connect-card {
-            display: block;
-            padding: 1.1rem 1.2rem;
+            display: flex;
+            align-items: center;
+            gap: 0.85rem;
+            padding: 0.9rem 1rem;
             border-radius: 16px;
             background: rgba(255,255,255,0.05);
             border: 1px solid rgba(255,255,255,0.10);
             text-decoration: none !important;
             color: #f6efe9 !important;
-            transition: transform 0.2s ease, background 0.2s ease;
+            transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
         }
         .connect-card:hover {
             transform: translateY(-3px);
             background: rgba(255,255,255,0.09);
+            border-color: rgba(255, 178, 140, 0.35);
         }
+        .connect-icon {
+            flex: 0 0 auto;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(255,178,140,0.18), rgba(240,138,168,0.14));
+            border: 1px solid rgba(255,178,140,0.20);
+            color: #ffd0b8;
+        }
+        .connect-icon svg { width: 20px; height: 20px; }
+        .connect-text { min-width: 0; flex: 1; }
         .connect-card .label {
-            font-size: 0.75rem;
-            letter-spacing: 0.18em;
+            font-size: 0.68rem;
+            letter-spacing: 0.20em;
             text-transform: uppercase;
             color: rgba(246, 239, 233, 0.55);
+            line-height: 1.2;
         }
         .connect-card .value {
-            font-family: 'Cormorant Garamond', serif;
-            font-size: 1.3rem;
+            /* Inter (sans-serif) so digits, letters, and the difference
+               between "1" and "I" are unambiguous in emails / handles. */
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-feature-settings: "tnum" 1, "lnum" 1, "ss01" 1;
+            font-size: 0.98rem;
+            font-weight: 500;
             margin-top: 0.15rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .gentle-note {
             color: rgba(246, 239, 233, 0.55);
@@ -525,6 +826,38 @@ def load_local_photos() -> List[Path]:
     return sorted([p for p in PHOTO_DIR.iterdir() if p.suffix.lower() in exts])
 
 
+@st.cache_data(show_spinner=False)
+def _encode_local_image(path_str: str, _mtime: float, max_dim: int = 1400, quality: int = 82) -> str:
+    """Read a local image, optionally downscale, return a base64 data URI.
+
+    Cached on (path, mtime) so re-uploads invalidate automatically and the
+    Streamlit rerun loop doesn't re-encode every photo on every interaction.
+    """
+    path = Path(path_str)
+    if HAS_PIL:
+        with PILImage.open(path) as im:
+            if im.mode in ("RGBA", "LA", "P"):
+                im = im.convert("RGB")
+            im.thumbnail((max_dim, max_dim), PILImage.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=quality, optimize=True)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    # Fallback: inline raw bytes (no resize). Page weight grows fast, but it works.
+    mime = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png",  ".webp": "image/webp",
+    }.get(path.suffix.lower(), "application/octet-stream")
+    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def image_to_data_uri(path: Path) -> str:
+    """Safe wrapper around _encode_local_image that never raises."""
+    try:
+        return _encode_local_image(str(path), path.stat().st_mtime)
+    except Exception:
+        return ""
+
+
 def caption_from_filename(path_or_url: str) -> str:
     """Make a soft caption from a filename or URL stem."""
     name = Path(path_or_url).stem
@@ -604,35 +937,34 @@ def render_gallery() -> None:
         )
         return
 
-    # Build the grid. Local files are embedded via Streamlit's image pipeline
-    # using columns so they render reliably; URL photos use plain <img> tags
-    # inside the same CSS card style.
-    cols_per_row = 4
-    items: List[tuple[str, str, str]] = []  # (kind, src, caption)
-    for p in local_photos:
-        items.append(("local", str(p), caption_from_filename(p.name)))
-    for u in url_photos:
-        items.append(("url", u, caption_from_filename(u)))
+    # Build uniform cards for both local files and URL photos so the strip
+    # has a consistent rhythm regardless of where the image came from.
+    cards: List[str] = []
 
-    for i in range(0, len(items), cols_per_row):
-        row = items[i : i + cols_per_row]
-        cols = st.columns(len(row), gap="small")
-        for col, (kind, src, cap) in zip(cols, row):
-            with col:
-                if kind == "local":
-                    # st.image handles local files cleanly across formats.
-                    st.image(src, use_container_width=True, caption=cap or None)
-                else:
-                    safe_cap = cap.replace("<", "&lt;").replace(">", "&gt;")
-                    st.markdown(
-                        f"""
-                        <div class="photo-card">
-                            <img src="{src}" alt="{safe_cap}" loading="lazy"/>
-                            {f'<div class="photo-caption">{safe_cap}</div>' if safe_cap else ''}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+    def _card(src: str, cap: str) -> str:
+        safe_cap = cap.replace("<", "&lt;").replace(">", "&gt;")
+        caption_html = f'<div class="photo-caption">{safe_cap}</div>' if safe_cap else ""
+        return (
+            '<div class="gallery-card">'
+            f'<img src="{src}" alt="{safe_cap}" loading="lazy"/>'
+            f"{caption_html}"
+            "</div>"
+        )
+
+    for p in local_photos:
+        data_uri = image_to_data_uri(p)
+        if not data_uri:
+            continue
+        cards.append(_card(data_uri, caption_from_filename(p.name)))
+
+    for u in url_photos:
+        cards.append(_card(u, caption_from_filename(u)))
+
+    st.markdown(
+        '<div class="scroll-hint"><span class="dot"></span>scroll &middot; swipe &middot; browse</div>'
+        f'<div class="gallery-strip-wrap"><div class="gallery-strip">{"".join(cards)}</div></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_timeline() -> None:
@@ -666,47 +998,49 @@ def render_interactives() -> None:
 
     left, right = st.columns([1, 1], gap="large")
 
+    if "quote_idx" not in st.session_state:
+        st.session_state.quote_idx = 0
+
     with left:
-        st.markdown('<div class="glass">', unsafe_allow_html=True)
+        quote = MEMORY_QUOTES[st.session_state.quote_idx]
+        safe_quote = quote.replace("<", "&lt;").replace(">", "&gt;")
         st.markdown(
-            "<div style='font-family:\"Cormorant Garamond\",serif;font-size:1.4rem;'>"
-            "Shuffle a memory quote</div>"
-            "<div style='color:rgba(246,239,233,0.6);font-size:0.9rem;margin-bottom:0.8rem;'>"
-            "Lines written for this page only.</div>",
+            f'''
+            <div class="glass little-card">
+                <div class="little-eyebrow">{ICONS["quote"]}<span>Memory quote</span></div>
+                <div class="little-title">Shuffle a thought</div>
+                <div class="little-sub">Lines written for this page only.</div>
+                <div class="pulled-quote">
+                    <span class="quote-mark">&ldquo;</span>{safe_quote}
+                </div>
+            </div>
+            ''',
             unsafe_allow_html=True,
         )
-        if "quote_idx" not in st.session_state:
-            st.session_state.quote_idx = 0
         if st.button("Shuffle", key="shuffle_btn"):
             # Avoid repeating the same quote twice in a row.
             new_idx = st.session_state.quote_idx
             while new_idx == st.session_state.quote_idx and len(MEMORY_QUOTES) > 1:
                 new_idx = random.randrange(len(MEMORY_QUOTES))
             st.session_state.quote_idx = new_idx
-        quote = MEMORY_QUOTES[st.session_state.quote_idx]
-        st.markdown(
-            f"<div style='font-family:\"Cormorant Garamond\",serif;font-style:italic;"
-            f"font-size:1.25rem;line-height:1.5;color:#fdf6ef;margin-top:0.6rem;'>"
-            f"&ldquo;{quote}&rdquo;</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
+            st.rerun()
 
     with right:
-        st.markdown('<div class="glass">', unsafe_allow_html=True)
+        bars = "".join("<span></span>" for _ in range(5))
         st.markdown(
-            "<div style='font-family:\"Cormorant Garamond\",serif;font-size:1.4rem;'>"
-            "Play our vibe</div>"
-            "<div style='color:rgba(246,239,233,0.6);font-size:0.9rem;margin-bottom:0.8rem;'>"
-            "A soft soundtrack, in case it helps.</div>",
+            f'''
+            <div class="glass little-card">
+                <div class="little-eyebrow">{ICONS["music"]}<span>Vibe</span></div>
+                <div class="little-title">Play our vibe</div>
+                <div class="little-sub">A soft soundtrack, in case it helps.</div>
+                <div class="vibe-visualizer">{bars}</div>
+                <a class="pill" href="{SPOTIFY_OR_YOUTUBE_URL}" target="_blank" rel="noopener">
+                    Open the playlist &#8599;
+                </a>
+            </div>
+            ''',
             unsafe_allow_html=True,
         )
-        st.markdown(
-            f'<a class="pill" href="{SPOTIFY_OR_YOUTUBE_URL}" target="_blank" rel="noopener">'
-            f"Open the playlist ↗</a>",
-            unsafe_allow_html=True,
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
 
     # Tiny letter
     st.markdown("<div style='height:1.2rem;'></div>", unsafe_allow_html=True)
@@ -740,16 +1074,23 @@ def render_connect_section() -> None:
         "&body=I%20visited%20the%20page."
     )
 
+    # Pull the Instagram handle out of the URL cleanly (drop query params).
+    ig_handle = INSTAGRAM_URL.rstrip("/").split("/")[-1].split("?")[0] or "instagram"
+
     cards = [
-        ("Instagram", "@" + INSTAGRAM_URL.rstrip("/").split("/")[-1], INSTAGRAM_URL),
-        ("Discord",   "Join the server",                                DISCORD_INVITE_URL),
-        ("Email",     MY_EMAIL_HERE,                                    mailto),
-        ("WhatsApp",  "Say hi",                                         WHATSAPP_URL),
+        ("instagram", "Instagram", "@" + ig_handle,    INSTAGRAM_URL),
+        ("discord",   "Discord",   "Join the server", DISCORD_INVITE_URL),
+        ("mail",      "Email",     MY_EMAIL_HERE,     mailto),
+        ("whatsapp",  "WhatsApp",  "Say hi",          WHATSAPP_URL),
     ]
     cards_html = "".join(
         f'<a class="connect-card" href="{url}" target="_blank" rel="noopener">'
-        f'<div class="label">{label}</div><div class="value">{value}</div></a>'
-        for label, value, url in cards
+        f'<span class="connect-icon">{ICONS[icon]}</span>'
+        f'<span class="connect-text">'
+        f'<div class="label">{label}</div>'
+        f'<div class="value">{value}</div>'
+        f'</span></a>'
+        for icon, label, value, url in cards
     )
     st.markdown(f'<div class="connect-grid">{cards_html}</div>', unsafe_allow_html=True)
 
