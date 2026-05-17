@@ -1,8 +1,8 @@
 # Still, Always.
 
-A small, quiet Streamlit app — a finished promise, made with care.
+A small, quiet Streamlit app, a finished promise, made with care.
 
-> "A small corner of the internet I once promised you — made with care, memories, and a little bit of hope."
+> "A small corner of the internet I once promised you, made with care, memories, and a little bit of hope."
 
 This is a polished, deploy-ready Streamlit project. It runs out of the box with sensible defaults and degrades gracefully when optional things (photos, secrets) aren't configured.
 
@@ -46,7 +46,7 @@ Then open the URL Streamlit prints (usually <http://localhost:8501>).
 1. Drop image files into `assets/photos/`.
 2. Supported formats: `.jpg`, `.jpeg`, `.png`, `.webp`.
 3. Filenames become soft captions (`a_quiet_evening.jpg` → "A quiet evening").
-4. Images are sorted alphabetically — prefix with `01_`, `02_`, … for a custom order.
+4. Images are sorted alphabetically - prefix with `01_`, `02_`, … for a custom order.
 
 You can also paste direct image URLs into the `PHOTO_URLS` list near the top of `app.py`. Local photos and URL photos render in the same grid.
 
@@ -87,7 +87,7 @@ DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/…"
 
 For **local development**, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill it in. That file is gitignored.
 
-If `ADMIN_PASSWORD` is not set, the app falls back to the `LOCAL_FALLBACK_ADMIN_PASSWORD` constant in `app.py` — **change that constant or set a real secret before deploying publicly.**
+If `ADMIN_PASSWORD` is not set, the app falls back to the `LOCAL_FALLBACK_ADMIN_PASSWORD` constant in `app.py` - **change that constant or set a real secret before deploying publicly.**
 
 If `DISCORD_WEBHOOK_URL` is not set, the "Send a ping" button quietly degrades to a `mailto:` link. No webhook URL is ever shown in the UI.
 

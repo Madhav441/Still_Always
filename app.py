@@ -1,6 +1,6 @@
 """
 Still, Always.
-A small, quiet Streamlit app — a finished promise, made with care.
+A small, quiet Streamlit app, a finished promise, made with care.
 
 Run locally:
     streamlit run app.py
@@ -30,20 +30,20 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Configuration — edit these placeholders before deploying.
+# Configuration - edit these placeholders before deploying.
 # ---------------------------------------------------------------------------
 
 # Personal links. Replace the placeholder strings with your real ones.
-MY_EMAIL_HERE = "you@example.com"
-INSTAGRAM_URL = "https://instagram.com/your_handle"
-DISCORD_INVITE_URL = "https://discord.gg/your_invite"
-WHATSAPP_URL = "https://wa.me/0000000000"
-SPOTIFY_OR_YOUTUBE_URL = "https://open.spotify.com/playlist/your_playlist_id"
+MY_EMAIL_HERE = "madhavmukherjee1@gmail.com"
+INSTAGRAM_URL = "https://www.instagram.com/breadbastket?igsh=c2sya3kycjcwZWZk"
+DISCORD_INVITE_URL = "https://discord.gg/tZPh377qeP"
+WHATSAPP_URL = "https://wa.me/61416232736"
+SPOTIFY_OR_YOUTUBE_URL = "https://music.youtube.com/playlist?list=PL6H4rqMvHT-H8h6ORnTMFQJqXM4Z1pz6h&si=yt35oKTsnGLTdNIE"
 
 # Optional direct image URLs. These render alongside any local photos found
 # in assets/photos. Use direct image links (ending in .jpg/.png/.webp), e.g.
 # GitHub raw URLs, public Dropbox direct links, etc.
-# Google Photos album URLs are NOT reliable here — see README.md.
+# Google Photos album URLs are NOT reliable here - see README.md.
 PHOTO_URLS: List[str] = [
     # "https://raw.githubusercontent.com/you/repo/main/example.jpg",
 ]
@@ -51,21 +51,21 @@ PHOTO_URLS: List[str] = [
 # Fallback admin password used ONLY when no Streamlit secret is configured.
 # This exists so local testing works; configure ADMIN_PASSWORD in secrets
 # before deploying anywhere public.
-LOCAL_FALLBACK_ADMIN_PASSWORD = "change-me-before-deploy"
+LOCAL_FALLBACK_ADMIN_PASSWORD = "Koibito"
 
 # Paths
 ROOT = Path(__file__).parent
 PHOTO_DIR = ROOT / "assets" / "photos"
 THOUGHTS_FILE = ROOT / "thoughts.json"
 
-# Quotes written for this app — not famous copyrighted lines.
+# Quotes written for this app - not famous copyrighted lines.
 MEMORY_QUOTES = [
     "Some promises don't expire; they just wait quietly until they can be kept.",
-    "I never wanted you to need this — only to know it existed if you ever wished it did.",
+    "I never wanted you to need this, only to know it existed if you ever wished it did.",
     "Care isn't loud. It is mostly the small things, done anyway.",
     "If memory is a kind of architecture, then this is one of its softer rooms.",
     "Not every story needs a reply. Some only need to be finished.",
-    "I built this the way I would build a paper boat — gently, and to be let go.",
+    "I built this the way I would build a paper boat, gently, and to be let go.",
     "Time moved on. The intention didn't.",
     "There is a kind of love that asks nothing back. This is closer to that.",
 ]
@@ -585,7 +585,7 @@ def render_hero() -> None:
         """
         <div class="hero" id="top">
             <h1>Still, Always.</h1>
-            <p class="sub">A small corner of the internet I once promised you &mdash; made with care, memories, and a little bit of hope.</p>
+            <p class="sub">A small corner of the internet I once promised you, made with care, memories, and a little bit of hope.</p>
             <p class="body">No pressure. No expectation. Just something I said I would make, and something I still wanted to finish properly.</p>
             <a class="pill" href="#gallery">Wander through it</a>
             <a class="pill ghost" href="#promise" style="margin-left:0.6rem;">Read the promise</a>
@@ -609,7 +609,7 @@ def render_gallery() -> None:
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="section-sub">A quiet collection. Browse softly &mdash; there is no order to any of it.</div>',
+        '<div class="section-sub">A quiet collection. Browse softly, there is no order to any of it.</div>',
         unsafe_allow_html=True,
     )
 
@@ -740,7 +740,7 @@ def render_interactives() -> None:
             "line-height:1.75;color:#fdf6ef;'>"
             "I don't know what this will mean to you, or whether it should mean anything at all. "
             "I only know that I once wanted to build you something beautiful, and I did not want "
-            "that promise to remain unfinished. So I made this &mdash; quietly, carefully, and with "
+            "that promise to remain unfinished. So I made this, quietly, carefully, and with "
             "the same softness that the best memories deserve."
             "</div>",
             unsafe_allow_html=True,
@@ -796,7 +796,7 @@ def render_connect_section() -> None:
                 if ok:
                     st.success("Sent. Thank you.")
                 else:
-                    # Stay graceful — never leak details to the visitor.
+                    # Stay graceful - never leak details to the visitor.
                     st.info("Saved as a wish. Thank you for stopping by.")
         with c2:
             st.markdown(
@@ -855,7 +855,7 @@ def render_sidebar_admin() -> None:
                         # Streamlit will rerender; the ticker reads from disk.
                     else:
                         st.warning("Empty thoughts don't get saved.")
-                st.caption(f"Last updated: {current.get('updated_at', '—')}")
+                st.caption(f"Last updated: {current.get('updated_at', '')}")
             else:
                 st.error("Incorrect password.")
         st.markdown("---")

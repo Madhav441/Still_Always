@@ -1,4 +1,4 @@
-# Streamlit theme — tuned to match the custom CSS in app.py.
+# Streamlit theme - tuned to match the custom CSS in app.py.
 [theme]
 base = "dark"
 primaryColor = "#e7a8d6"
