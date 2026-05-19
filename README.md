@@ -12,7 +12,7 @@ This is a polished, deploy-ready Streamlit project. It runs out of the box with 
 
 - **Hero section** with cinematic gradient + glass card
 - **Photo gallery** that reads from `assets/photos/` and/or a `PHOTO_URLS` list
-- **Sticky "Current thought" ticker** at the bottom, backed by `thoughts.json`, a cache mirror, and an append-only recovery log
+- **Sticky "Current thought" ticker** at the bottom, backed by local files plus optional Firestore persistence for redeploy-safe storage
 - **Timeline / "The promise"** cards
 - **Interactive bits**: shuffleable quote, vibe link, expandable tiny letter
 - **Connect / ping section** with mailto + optional Discord webhook
@@ -77,7 +77,12 @@ When a thought is saved, the app now writes to:
 - `thoughts_cache.json` (cache mirror)
 - `thoughts_log.jsonl` (append-only recovery log)
 
-On startup, the app reconciles all three and restores the newest message so ticker text does not roll back after restarts.
+On startup, the app reconciles local sources and restores the newest message so ticker text does not roll back after restarts.
+
+If Firestore is configured, the app also:
+- Reads the latest thought from Firestore during reconcile
+- Writes back the newest thought to Firestore when needed
+- Saves each admin update to Firestore and local files
 
 ---
 
@@ -91,6 +96,30 @@ On **Streamlit Community Cloud**, open your app → *Settings* → *Secrets* and
 ADMIN_PASSWORD = "your-password"
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/…"
 ```
+
+To make ticker updates persistent across redeploys/restarts, add Firestore secrets too:
+
+```toml
+FIRESTORE_PROJECT_ID = "your-gcp-project-id"
+FIRESTORE_COLLECTION = "still_always"   # optional, default shown
+FIRESTORE_DOCUMENT = "ticker"            # optional, default shown
+
+[FIRESTORE_SERVICE_ACCOUNT]
+type = "service_account"
+project_id = "your-gcp-project-id"
+private_key_id = "..."
+private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+client_email = "...@...iam.gserviceaccount.com"
+client_id = "..."
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/..."
+```
+
+Minimum Firestore permissions needed for that service account:
+- Read/write one document in the chosen collection
+- Create documents in the document's `history` subcollection
 
 For **local development**, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill it in. That file is gitignored.
 
@@ -136,7 +165,7 @@ That's it. The app will install `requirements.txt` and boot.
 - No analytics, no visitor tracking, no data collection.
 - Ping notifications only fire when a visitor explicitly clicks the button.
 - The Discord webhook URL is never exposed in the rendered HTML.
-- Ticker writes are local to this app folder and include `thoughts.json`, `thoughts_cache.json`, and `thoughts_log.jsonl`.
+- Ticker writes are local by default (`thoughts.json`, `thoughts_cache.json`, `thoughts_log.jsonl`) and can optionally sync to Firestore for durable cloud persistence.
 
 ---
 
@@ -145,7 +174,7 @@ That's it. The app will install `requirements.txt` and boot.
 ```
 .
 ├── app.py                      # The Streamlit app
-├── requirements.txt            # streamlit, requests, Pillow
+├── requirements.txt            # streamlit, requests, Pillow, Firestore client
 ├── thoughts.json               # Latest "current thought" + timestamp (primary)
 ├── thoughts_cache.json         # Mirror cache used for recovery
 ├── thoughts_log.jsonl          # Append-only ticker history/recovery log

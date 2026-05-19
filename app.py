@@ -28,6 +28,14 @@ except Exception:
 
 import streamlit as st
 
+try:
+    from google.cloud import firestore
+    from google.oauth2 import service_account
+
+    HAS_FIRESTORE = True
+except Exception:
+    HAS_FIRESTORE = False
+
 # Pillow is used to downscale + recompress local photos before inlining them
 # as base64 data URIs. The fallback path still works without it.
 try:
@@ -50,6 +58,10 @@ SPOTIFY_OR_YOUTUBE_URL = "https://music.youtube.com/playlist?list=PL6H4rqMvHT-H8
 
 # Ticker/admin timestamps are shown in this timezone.
 APP_TIMEZONE = "Australia/Sydney"
+
+# Optional Firestore settings (override in Streamlit secrets if needed).
+FIRESTORE_COLLECTION_DEFAULT = "still_always"
+FIRESTORE_DOCUMENT_DEFAULT = "ticker"
 
 # Optional direct image URLs. These render alongside any local photos found
 # in assets/photos. Use direct image links (ending in .jpg/.png/.webp), e.g.
@@ -818,7 +830,7 @@ def _local_today_str() -> str:
 
 
 def _iso_utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _to_local_display(utc_iso: str) -> str:
@@ -915,6 +927,144 @@ def _append_log_entry(event: str, record: dict) -> None:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def _get_fire_config_value(key: str, default=None):
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
+def _firestore_project_id() -> str:
+    return str(_get_fire_config_value("FIRESTORE_PROJECT_ID", "")).strip()
+
+
+def _firestore_collection_name() -> str:
+    value = str(_get_fire_config_value("FIRESTORE_COLLECTION", FIRESTORE_COLLECTION_DEFAULT)).strip()
+    return value or FIRESTORE_COLLECTION_DEFAULT
+
+
+def _firestore_document_name() -> str:
+    value = str(_get_fire_config_value("FIRESTORE_DOCUMENT", FIRESTORE_DOCUMENT_DEFAULT)).strip()
+    return value or FIRESTORE_DOCUMENT_DEFAULT
+
+
+def _firestore_service_account_info() -> Optional[dict]:
+    """Read service account info from secrets in dict or JSON string form."""
+    try:
+        raw = st.secrets.get("FIRESTORE_SERVICE_ACCOUNT")
+    except Exception:
+        raw = None
+    if raw is None:
+        try:
+            raw = st.secrets.get("gcp_service_account")
+        except Exception:
+            raw = None
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    try:
+        return dict(raw)
+    except Exception:
+        return None
+
+
+def _is_firestore_configured() -> bool:
+    if not HAS_FIRESTORE:
+        return False
+    # If credentials are present, project can come from them.
+    if _firestore_service_account_info():
+        return True
+    # Allow default credentials if project id is explicitly configured.
+    return bool(_firestore_project_id())
+
+
+@st.cache_resource(show_spinner=False)
+def _get_firestore_client_cached(
+    project_id: str,
+    service_account_json: str,
+):
+    if not HAS_FIRESTORE:
+        return None
+    try:
+        if service_account_json:
+            info = json.loads(service_account_json)
+            creds = service_account.Credentials.from_service_account_info(info)
+            resolved_project = project_id or str(info.get("project_id", "")).strip() or None
+            return firestore.Client(project=resolved_project, credentials=creds)
+        if project_id:
+            return firestore.Client(project=project_id)
+        return firestore.Client()
+    except Exception:
+        return None
+
+
+def _get_firestore_client():
+    if not _is_firestore_configured():
+        return None
+    project_id = _firestore_project_id()
+    service_account_info = _firestore_service_account_info()
+    service_account_json = (
+        json.dumps(service_account_info, ensure_ascii=False)
+        if service_account_info
+        else ""
+    )
+    return _get_firestore_client_cached(project_id, service_account_json)
+
+
+def _firestore_doc_ref():
+    client = _get_firestore_client()
+    if client is None:
+        return None
+    try:
+        return client.collection(_firestore_collection_name()).document(_firestore_document_name())
+    except Exception:
+        return None
+
+
+def _load_firestore_record() -> Optional[dict]:
+    ref = _firestore_doc_ref()
+    if ref is None:
+        return None
+    try:
+        snap = ref.get()
+        if not snap.exists:
+            return None
+        return _normalize_thought_record(snap.to_dict())
+    except Exception:
+        return None
+
+
+def _write_firestore_record(record: dict, event: str) -> bool:
+    ref = _firestore_doc_ref()
+    normalized = _normalize_thought_record(record)
+    if ref is None or normalized is None:
+        return False
+    try:
+        payload = dict(normalized)
+        payload["storage_backend"] = "firestore"
+        payload["event"] = event
+        payload["stored_at_utc"] = _iso_utc_now()
+        ref.set(payload, merge=True)
+        # Append history for audit/recovery (best effort).
+        ref.collection("history").add(
+            {
+                "event": event,
+                "logged_at_utc": _iso_utc_now(),
+                "record": normalized,
+            }
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _load_log_records() -> List[dict]:
     records: List[dict] = []
     if not THOUGHTS_LOG_FILE.exists():
@@ -953,12 +1103,17 @@ def _sync_primary_and_cache(record: dict) -> None:
     _atomic_write_json(THOUGHTS_CACHE_FILE, record)
 
 
-def _choose_latest_record(primary: Optional[dict], cache: Optional[dict], log_records: List[dict]) -> Optional[dict]:
+def _choose_latest_record(
+    primary: Optional[dict],
+    cache: Optional[dict],
+    log_records: List[dict],
+    firestore_record: Optional[dict],
+) -> Optional[dict]:
     """Choose latest record with deterministic tie-breakers.
 
     Tie-breaking precedence (latest wins):
     1) newer UTC timestamp
-    2) source priority: log > cache > primary
+    2) source priority: firestore > log > cache > primary
     3) log sequence (later line wins)
     """
     ranked: List[tuple[datetime, int, int, dict]] = []
@@ -969,6 +1124,8 @@ def _choose_latest_record(primary: Optional[dict], cache: Optional[dict], log_re
         ranked.append((_record_datetime_utc(cache), 2, 0, cache))
     for idx, record in enumerate(log_records):
         ranked.append((_record_datetime_utc(record), 3, idx, record))
+    if firestore_record:
+        ranked.append((_record_datetime_utc(firestore_record), 4, 0, firestore_record))
 
     if not ranked:
         return None
@@ -980,10 +1137,13 @@ def reconcile_thought_storage() -> dict:
     primary_record = _normalize_thought_record(_read_json_if_exists(THOUGHTS_FILE))
     cache_record = _normalize_thought_record(_read_json_if_exists(THOUGHTS_CACHE_FILE))
     log_records = _load_log_records()
+    firestore_record = _load_firestore_record()
 
-    latest = _choose_latest_record(primary_record, cache_record, log_records)
+    latest = _choose_latest_record(primary_record, cache_record, log_records, firestore_record)
     if latest:
         _sync_primary_and_cache(latest)
+        if firestore_record != latest:
+            _write_firestore_record(latest, "writeback")
         # Only append when startup recovery promoted a different record.
         if _last_log_record() != latest:
             _append_log_entry("reconcile", latest)
@@ -995,6 +1155,7 @@ def reconcile_thought_storage() -> dict:
         "updated_at_utc": _iso_utc_now(),
     }
     _sync_primary_and_cache(bootstrap)
+    _write_firestore_record(bootstrap, "bootstrap")
     _append_log_entry("bootstrap", bootstrap)
     return bootstrap
 
@@ -1017,6 +1178,7 @@ def save_thought(text: str) -> dict:
         "updated_at_local": _to_local_display(updated_at_utc),
     }
     _sync_primary_and_cache(payload)
+    _write_firestore_record(payload, "save")
     _append_log_entry("save", payload)
     return payload
 
