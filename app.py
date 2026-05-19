@@ -17,9 +17,9 @@ import base64
 import io
 import json
 import random
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import streamlit as st
 
@@ -60,6 +60,8 @@ LOCAL_FALLBACK_ADMIN_PASSWORD = "Koibito"
 ROOT = Path(__file__).parent
 PHOTO_DIR = ROOT / "assets" / "photos"
 THOUGHTS_FILE = ROOT / "thoughts.json"
+THOUGHTS_CACHE_FILE = ROOT / "thoughts_cache.json"
+THOUGHTS_LOG_FILE = ROOT / "thoughts_log.jsonl"
 
 # Inline SVG icons (currentColor-based so they inherit the parent text color).
 # Kept lightweight so the page stays fast and offline-safe.
@@ -789,33 +791,176 @@ def inject_css() -> None:
 DEFAULT_THOUGHT = {
     "latest_thought": "I hope today was gentle with you.",
     "updated_at": str(date.today()),
+    "updated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
 }
 
 
-def load_thought() -> dict:
-    """Load the latest thought from thoughts.json, creating it if missing."""
+def _iso_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Atomically write JSON so abrupt restarts don't leave partial files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    temp_path.replace(path)
+
+
+def _read_json_if_exists(path: Path) -> Optional[dict]:
+    if not path.exists():
+        return None
     try:
-        if not THOUGHTS_FILE.exists():
-            save_thought(DEFAULT_THOUGHT["latest_thought"])
-        with THOUGHTS_FILE.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        # Defensive: make sure required keys exist.
-        if "latest_thought" not in data:
-            data["latest_thought"] = DEFAULT_THOUGHT["latest_thought"]
-        if "updated_at" not in data:
-            data["updated_at"] = str(date.today())
-        return data
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _normalize_thought_record(data: Optional[dict]) -> Optional[dict]:
+    """Return a validated thought record or None for invalid payloads."""
+    if not isinstance(data, dict):
+        return None
+    text = str(data.get("latest_thought", "")).strip()
+    if not text:
+        return None
+    updated_at = str(data.get("updated_at") or date.today())
+    updated_at_utc = str(data.get("updated_at_utc") or "").strip()
+    if not updated_at_utc:
+        updated_at_utc = f"{updated_at}T00:00:00+00:00"
+    return {
+        "latest_thought": text,
+        "updated_at": updated_at,
+        "updated_at_utc": updated_at_utc,
+    }
+
+
+def _record_sort_key(record: dict) -> datetime:
+    raw = str(record.get("updated_at_utc", "")).strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        pass
+    raw_date = str(record.get("updated_at", "")).strip()
+    try:
+        parsed_date = date.fromisoformat(raw_date)
+        return datetime(parsed_date.year, parsed_date.month, parsed_date.day, tzinfo=timezone.utc)
+    except Exception:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _append_log_entry(event: str, record: dict) -> None:
+    """Append a write-ahead event so the newest message can be recovered."""
+    THOUGHTS_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "event": event,
+        "logged_at_utc": _iso_utc_now(),
+        "record": _normalize_thought_record(record),
+    }
+    with THOUGHTS_LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _load_log_records() -> List[dict]:
+    records: List[dict] = []
+    if not THOUGHTS_LOG_FILE.exists():
+        return records
+    try:
+        with THOUGHTS_LOG_FILE.open("r", encoding="utf-8") as f:
+            for line in f:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except Exception:
+                    continue
+                record = _normalize_thought_record(row.get("record") if isinstance(row, dict) else None)
+                if record:
+                    records.append(record)
+    except Exception:
+        return []
+    return records
+
+
+def _last_log_record() -> Optional[dict]:
+    records = _load_log_records()
+    return records[-1] if records else None
+
+
+def _sync_primary_and_cache(record: dict) -> None:
+    """Write latest state to both files so either one can restore the other."""
+    _atomic_write_json(THOUGHTS_FILE, record)
+    _atomic_write_json(THOUGHTS_CACHE_FILE, record)
+
+
+def reconcile_thought_storage() -> dict:
+    """Recover latest thought from primary file, cache mirror, or log history."""
+    candidates: List[dict] = []
+    for path in (THOUGHTS_FILE, THOUGHTS_CACHE_FILE):
+        record = _normalize_thought_record(_read_json_if_exists(path))
+        if record:
+            candidates.append(record)
+    candidates.extend(_load_log_records())
+
+    if candidates:
+        latest = max(candidates, key=_record_sort_key)
+        _sync_primary_and_cache(latest)
+        # Only append when startup recovery promoted a different record.
+        if _last_log_record() != latest:
+            _append_log_entry("reconcile", latest)
+        return latest
+
+    bootstrap = {
+        "latest_thought": DEFAULT_THOUGHT["latest_thought"],
+        "updated_at": str(date.today()),
+        "updated_at_utc": _iso_utc_now(),
+    }
+    _sync_primary_and_cache(bootstrap)
+    _append_log_entry("bootstrap", bootstrap)
+    return bootstrap
+
+
+def load_thought() -> dict:
+    """Load the latest thought with startup recovery across file/cache/log."""
+    try:
+        return reconcile_thought_storage()
     except Exception:
         return dict(DEFAULT_THOUGHT)
 
 
-def save_thought(text: str) -> None:
-    """Persist a new thought to thoughts.json."""
+def save_thought(text: str) -> dict:
+    """Persist thought to primary file, cache mirror, and append-only log."""
     payload = {
         "latest_thought": text.strip(),
         "updated_at": str(date.today()),
+        "updated_at_utc": _iso_utc_now(),
     }
-    THOUGHTS_FILE.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _sync_primary_and_cache(payload)
+    _append_log_entry("save", payload)
+    return payload
+
+
+def get_cached_message_history(limit: int = 10) -> List[dict]:
+    """Return recent cached messages for operator visibility."""
+    records = _load_log_records()
+    if not records:
+        latest = _normalize_thought_record(_read_json_if_exists(THOUGHTS_CACHE_FILE))
+        return [latest] if latest else []
+    # Deduplicate consecutive duplicate messages while preserving recency.
+    deduped: List[dict] = []
+    for record in records:
+        if deduped and deduped[-1].get("latest_thought") == record.get("latest_thought"):
+            continue
+        deduped.append(record)
+    return deduped[-limit:]
 
 
 def load_local_photos() -> List[Path]:
@@ -1161,12 +1306,22 @@ def render_sidebar_admin() -> None:
                 )
                 if st.button("Save thought", key="admin_save"):
                     if new_text.strip():
-                        save_thought(new_text)
+                        saved = save_thought(new_text)
                         st.success("Saved.")
+                        st.caption(f"Cached at {saved.get('updated_at_utc', '')}")
                         # Streamlit will rerender; the ticker reads from disk.
                     else:
                         st.warning("Empty thoughts don't get saved.")
                 st.caption(f"Last updated: {current.get('updated_at', '')}")
+                with st.expander("Recent cached messages"):
+                    history = get_cached_message_history(limit=8)
+                    if not history:
+                        st.caption("No cache history yet.")
+                    else:
+                        for item in reversed(history):
+                            st.write(
+                                f"{item.get('updated_at_utc', '')} - {item.get('latest_thought', '')}"
+                            )
             else:
                 st.error("Incorrect password.")
         st.markdown("---")

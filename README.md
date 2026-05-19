@@ -12,7 +12,7 @@ This is a polished, deploy-ready Streamlit project. It runs out of the box with 
 
 - **Hero section** with cinematic gradient + glass card
 - **Photo gallery** that reads from `assets/photos/` and/or a `PHOTO_URLS` list
-- **Sticky "Current thought" ticker** at the bottom, backed by `thoughts.json`
+- **Sticky "Current thought" ticker** at the bottom, backed by `thoughts.json`, a cache mirror, and an append-only recovery log
 - **Timeline / "The promise"** cards
 - **Interactive bits**: shuffleable quote, vibe link, expandable tiny letter
 - **Connect / ping section** with mailto + optional Discord webhook
@@ -72,6 +72,13 @@ Two ways:
    ```
 2. **Use the sidebar admin pane.** Open the sidebar (top-left chevron), enter the admin password, edit the thought, and hit *Save*.
 
+When a thought is saved, the app now writes to:
+- `thoughts.json` (primary state)
+- `thoughts_cache.json` (cache mirror)
+- `thoughts_log.jsonl` (append-only recovery log)
+
+On startup, the app reconciles all three and restores the newest message so ticker text does not roll back after restarts.
+
 ---
 
 ## Configure secrets (optional)
@@ -129,7 +136,7 @@ That's it. The app will install `requirements.txt` and boot.
 - No analytics, no visitor tracking, no data collection.
 - Ping notifications only fire when a visitor explicitly clicks the button.
 - The Discord webhook URL is never exposed in the rendered HTML.
-- `thoughts.json` is the only thing the app ever writes to disk, and only when you update it via the admin pane.
+- Ticker writes are local to this app folder and include `thoughts.json`, `thoughts_cache.json`, and `thoughts_log.jsonl`.
 
 ---
 
@@ -139,7 +146,9 @@ That's it. The app will install `requirements.txt` and boot.
 .
 ├── app.py                      # The Streamlit app
 ├── requirements.txt            # streamlit, requests, Pillow
-├── thoughts.json               # Latest "current thought" + timestamp
+├── thoughts.json               # Latest "current thought" + timestamp (primary)
+├── thoughts_cache.json         # Mirror cache used for recovery
+├── thoughts_log.jsonl          # Append-only ticker history/recovery log
 ├── README.md                   # This file
 ├── .gitignore
 ├── .streamlit/
