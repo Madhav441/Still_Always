@@ -1041,28 +1041,31 @@ def _load_firestore_record() -> Optional[dict]:
         return None
 
 
-def _write_firestore_record(record: dict, event: str) -> bool:
+def _write_firestore_record(record: dict, event: str) -> tuple[bool, str]:
     ref = _firestore_doc_ref()
     normalized = _normalize_thought_record(record)
     if ref is None or normalized is None:
-        return False
+        return False, "Firestore document reference unavailable"
     try:
         payload = dict(normalized)
         payload["storage_backend"] = "firestore"
         payload["event"] = event
         payload["stored_at_utc"] = _iso_utc_now()
         ref.set(payload, merge=True)
-        # Append history for audit/recovery (best effort).
-        ref.collection("history").add(
-            {
-                "event": event,
-                "logged_at_utc": _iso_utc_now(),
-                "record": normalized,
-            }
-        )
-        return True
-    except Exception:
-        return False
+        # Append history for audit/recovery (best effort only).
+        try:
+            ref.collection("history").add(
+                {
+                    "event": event,
+                    "logged_at_utc": _iso_utc_now(),
+                    "record": normalized,
+                }
+            )
+            return True, "Saved to Firestore"
+        except Exception as history_exc:
+            return True, f"Saved to Firestore (history logging failed: {type(history_exc).__name__})"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
 
 
 def _firestore_status() -> tuple[bool, str]:
@@ -1078,7 +1081,7 @@ def _firestore_status() -> tuple[bool, str]:
         ref.get()
         return True, f"Connected ({_firestore_collection_name()}/{_firestore_document_name()})"
     except Exception as exc:
-        return False, f"Firestore unavailable: {type(exc).__name__}"
+        return False, f"Firestore unavailable: {type(exc).__name__}: {exc}"
 
 
 def _load_log_records() -> List[dict]:
@@ -1194,10 +1197,11 @@ def save_thought(text: str) -> dict:
         "updated_at_local": _to_local_display(updated_at_utc),
     }
     _sync_primary_and_cache(payload)
-    firestore_saved = _write_firestore_record(payload, "save")
+    firestore_saved, firestore_message = _write_firestore_record(payload, "save")
     _append_log_entry("save", payload)
     payload["persisted_to_firestore"] = firestore_saved
     payload["persisted_backend"] = "firestore+local" if firestore_saved else "local-only"
+    payload["firestore_message"] = firestore_message
     return payload
 
 
@@ -1570,8 +1574,12 @@ def render_sidebar_admin() -> None:
                         st.caption(f"Cached at {saved.get('updated_at_local', '')}")
                         if saved.get("persisted_to_firestore"):
                             st.caption("Persisted to Firestore and local cache.")
+                            if saved.get("firestore_message"):
+                                st.caption(saved.get("firestore_message"))
                         else:
                             st.warning("Saved locally only. Firestore write failed or is not configured.")
+                            if saved.get("firestore_message"):
+                                st.caption(f"Firestore error: {saved.get('firestore_message')}")
                         # Streamlit will rerender; the ticker reads from disk.
                     else:
                         st.warning("Empty thoughts don't get saved.")
