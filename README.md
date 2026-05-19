@@ -118,9 +118,13 @@ token_uri = "https://oauth2.googleapis.com/token"
 auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
 client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/..."
 
-FIREBASE_STORAGE_BUCKET = "still-always.firebasestorage.app"
+FIREBASE_STORAGE_BUCKET = "your-actual-bucket-name"
 MEMORIES_COLLECTION = "memories"
 ```
+
+For `FIREBASE_STORAGE_BUCKET`, copy the exact bucket name shown in Firebase Storage settings.
+Common values are either `your-project-id.appspot.com` or `your-project-id.firebasestorage.app`.
+If omitted, the app will try both patterns automatically.
 
 Minimum Firestore permissions needed for that service account:
 - Read/write one document in the chosen collection

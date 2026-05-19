@@ -973,6 +973,24 @@ def _storage_bucket_name() -> str:
     return ""
 
 
+def _candidate_storage_bucket_names() -> List[str]:
+    names: List[str] = []
+    explicit = str(_get_fire_config_value("FIREBASE_STORAGE_BUCKET", "")).strip()
+    project_id = _firestore_project_id()
+    if explicit:
+        names.append(explicit)
+    if project_id:
+        # Firebase projects can surface either bucket naming pattern.
+        names.append(f"{project_id}.firebasestorage.app")
+        names.append(f"{project_id}.appspot.com")
+    # Preserve order and remove empties/duplicates.
+    deduped: List[str] = []
+    for name in names:
+        if name and name not in deduped:
+            deduped.append(name)
+    return deduped
+
+
 def _firestore_service_account_info() -> Optional[dict]:
     """Read service account info from secrets in dict or JSON string form."""
     try:
@@ -1088,13 +1106,17 @@ def _firestore_doc_ref():
 
 def _storage_bucket():
     client = _get_storage_client()
-    bucket_name = _storage_bucket_name()
-    if client is None or not bucket_name:
+    if client is None:
         return None
-    try:
-        return client.bucket(bucket_name)
-    except Exception:
-        return None
+    for bucket_name in _candidate_storage_bucket_names():
+        try:
+            bucket = client.bucket(bucket_name)
+            # Validate existence so callers don't fail later with a 404.
+            bucket.reload()
+            return bucket
+        except Exception:
+            continue
+    return None
 
 
 def _load_firestore_record() -> Optional[dict]:
