@@ -29,12 +29,21 @@ except Exception:
 import streamlit as st
 
 try:
-    from google.cloud import firestore
     from google.oauth2 import service_account
+except Exception:
+    service_account = None
 
+try:
+    from google.cloud import firestore
     HAS_FIRESTORE = True
 except Exception:
     HAS_FIRESTORE = False
+
+try:
+    from google.cloud import storage
+    HAS_STORAGE = True
+except Exception:
+    HAS_STORAGE = False
 
 # Pillow is used to downscale + recompress local photos before inlining them
 # as base64 data URIs. The fallback path still works without it.
@@ -62,6 +71,7 @@ APP_TIMEZONE = "Australia/Sydney"
 # Optional Firestore settings (override in Streamlit secrets if needed).
 FIRESTORE_COLLECTION_DEFAULT = "still_always"
 FIRESTORE_DOCUMENT_DEFAULT = "ticker"
+MEMORIES_COLLECTION_DEFAULT = "memories"
 
 # Optional direct image URLs. These render alongside any local photos found
 # in assets/photos. Use direct image links (ending in .jpg/.png/.webp), e.g.
@@ -948,6 +958,21 @@ def _firestore_document_name() -> str:
     return value or FIRESTORE_DOCUMENT_DEFAULT
 
 
+def _memories_collection_name() -> str:
+    value = str(_get_fire_config_value("MEMORIES_COLLECTION", MEMORIES_COLLECTION_DEFAULT)).strip()
+    return value or MEMORIES_COLLECTION_DEFAULT
+
+
+def _storage_bucket_name() -> str:
+    explicit = str(_get_fire_config_value("FIREBASE_STORAGE_BUCKET", "")).strip()
+    if explicit:
+        return explicit
+    project_id = _firestore_project_id()
+    if project_id:
+        return f"{project_id}.firebasestorage.app"
+    return ""
+
+
 def _firestore_service_account_info() -> Optional[dict]:
     """Read service account info from secrets in dict or JSON string form."""
     try:
@@ -1005,6 +1030,26 @@ def _get_firestore_client_cached(
         return None
 
 
+@st.cache_resource(show_spinner=False)
+def _get_storage_client_cached(
+    project_id: str,
+    service_account_json: str,
+):
+    if not HAS_STORAGE:
+        return None
+    try:
+        if service_account_json and service_account is not None:
+            info = json.loads(service_account_json)
+            creds = service_account.Credentials.from_service_account_info(info)
+            resolved_project = project_id or str(info.get("project_id", "")).strip() or None
+            return storage.Client(project=resolved_project, credentials=creds)
+        if project_id:
+            return storage.Client(project=project_id)
+        return storage.Client()
+    except Exception:
+        return None
+
+
 def _get_firestore_client():
     if not _is_firestore_configured():
         return None
@@ -1018,12 +1063,36 @@ def _get_firestore_client():
     return _get_firestore_client_cached(project_id, service_account_json)
 
 
+def _get_storage_client():
+    if not HAS_STORAGE:
+        return None
+    project_id = _firestore_project_id()
+    service_account_info = _firestore_service_account_info()
+    service_account_json = (
+        json.dumps(service_account_info, ensure_ascii=False)
+        if service_account_info
+        else ""
+    )
+    return _get_storage_client_cached(project_id, service_account_json)
+
+
 def _firestore_doc_ref():
     client = _get_firestore_client()
     if client is None:
         return None
     try:
         return client.collection(_firestore_collection_name()).document(_firestore_document_name())
+    except Exception:
+        return None
+
+
+def _storage_bucket():
+    client = _get_storage_client()
+    bucket_name = _storage_bucket_name()
+    if client is None or not bucket_name:
+        return None
+    try:
+        return client.bucket(bucket_name)
     except Exception:
         return None
 
@@ -1039,6 +1108,95 @@ def _load_firestore_record() -> Optional[dict]:
         return _normalize_thought_record(snap.to_dict())
     except Exception:
         return None
+
+
+def _list_memory_records(limit: int = 120) -> List[dict]:
+    client = _get_firestore_client()
+    if client is None or not HAS_FIRESTORE:
+        return []
+    try:
+        query = (
+            client.collection(_memories_collection_name())
+            .order_by("created_at_utc", direction=firestore.Query.DESCENDING)
+            .limit(limit)
+        )
+        rows = []
+        for doc in query.stream():
+            data = doc.to_dict() or {}
+            if data.get("type") == "image":
+                data["id"] = doc.id
+                rows.append(data)
+        return rows
+    except Exception:
+        return []
+
+
+def _build_signed_media_url(storage_path: str, ttl_minutes: int = 120) -> str:
+    bucket = _storage_bucket()
+    if bucket is None or not storage_path:
+        return ""
+    try:
+        blob = bucket.blob(storage_path)
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=ttl_minutes),
+            method="GET",
+        )
+    except Exception:
+        return ""
+
+
+def _write_memory_record(record: dict) -> tuple[bool, str]:
+    client = _get_firestore_client()
+    if client is None:
+        return False, "Firestore is not configured"
+    try:
+        client.collection(_memories_collection_name()).add(record)
+        return True, "Memory metadata written to Firestore"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _upload_memory_image(uploaded_file, caption: str) -> tuple[bool, str]:
+    if uploaded_file is None:
+        return False, "No image selected"
+    if not HAS_STORAGE:
+        return False, "google-cloud-storage package is not installed"
+    bucket = _storage_bucket()
+    if bucket is None:
+        return False, "Firebase Storage is not configured"
+
+    original_name = Path(str(uploaded_file.name or "memory")).name
+    safe_name = "".join(ch for ch in original_name if ch.isalnum() or ch in {".", "_", "-"}) or "memory"
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    storage_path = f"memories/images/{ts}_{safe_name}"
+
+    try:
+        blob = bucket.blob(storage_path)
+        blob.upload_from_file(
+            uploaded_file,
+            rewind=True,
+            content_type=getattr(uploaded_file, "type", None) or "application/octet-stream",
+        )
+    except Exception as exc:
+        return False, f"Storage upload failed: {type(exc).__name__}: {exc}"
+
+    created_utc = _iso_utc_now()
+    memory_record = {
+        "type": "image",
+        "caption": str(caption or "").strip(),
+        "storage_path": storage_path,
+        "created_at_utc": created_utc,
+        "created_at_local": _to_local_display(created_utc),
+    }
+    ok, msg = _write_memory_record(memory_record)
+    if not ok:
+        try:
+            blob.delete()
+        except Exception:
+            pass
+        return False, f"Upload rolled back: {msg}"
+    return True, "Image uploaded to Firebase Storage and indexed in Firestore"
 
 
 def _write_firestore_record(record: dict, event: str) -> tuple[bool, str]:
@@ -1082,6 +1240,19 @@ def _firestore_status() -> tuple[bool, str]:
         return True, f"Connected ({_firestore_collection_name()}/{_firestore_document_name()})"
     except Exception as exc:
         return False, f"Firestore unavailable: {type(exc).__name__}: {exc}"
+
+
+def _storage_status() -> tuple[bool, str]:
+    if not HAS_STORAGE:
+        return False, "Storage client package not installed"
+    bucket = _storage_bucket()
+    if bucket is None:
+        return False, "Storage bucket is not configured"
+    try:
+        bucket.reload()
+        return True, f"Connected ({bucket.name})"
+    except Exception as exc:
+        return False, f"Storage unavailable: {type(exc).__name__}: {exc}"
 
 
 def _load_log_records() -> List[dict]:
@@ -1362,11 +1533,38 @@ def render_gallery() -> None:
     for u in url_photos:
         cards.append(_card(u, caption_from_filename(u)))
 
+    # Firestore-backed memories (uploaded by admin) are rendered first.
+    for memory in _list_memory_records(limit=120):
+        src = _build_signed_media_url(str(memory.get("storage_path", "")))
+        if not src:
+            continue
+        cap = str(memory.get("caption", "")).strip() or caption_from_filename(str(memory.get("storage_path", "")))
+        cards.insert(0, _card(src, cap))
+
     st.markdown(
         '<div class="scroll-hint"><span class="dot"></span>scroll &middot; swipe &middot; browse</div>'
         f'<div class="gallery-strip-wrap"><div class="gallery-strip">{"".join(cards)}</div></div>',
         unsafe_allow_html=True,
     )
+
+    if st.session_state.get("admin_unlocked", False):
+        st.markdown("<div style='height:1.2rem;'></div>", unsafe_allow_html=True)
+        st.markdown("#### Admin upload")
+        st.caption("Upload images directly to Firebase Storage. They will appear in this memories section.")
+        uploaded = st.file_uploader(
+            "Upload memory image",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=False,
+            key="memory_upload_file",
+        )
+        caption = st.text_input("Caption (optional)", key="memory_upload_caption")
+        if st.button("Upload image", key="memory_upload_btn"):
+            ok, msg = _upload_memory_image(uploaded, caption)
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
 
 
 def render_timeline() -> None:
@@ -1551,14 +1749,22 @@ def render_sidebar_admin() -> None:
         st.caption("A small admin pane for updating the thought ticker.")
         pwd = st.text_input("Password", type="password", key="admin_pw")
         expected = get_admin_password()
+        if "admin_unlocked" not in st.session_state:
+            st.session_state.admin_unlocked = False
         if pwd:
             if pwd == expected:
+                st.session_state.admin_unlocked = True
                 st.success("Unlocked.")
                 fs_ok, fs_msg = _firestore_status()
                 if fs_ok:
                     st.caption(f"Storage backend: {fs_msg}")
                 else:
                     st.caption(f"Storage backend: local fallback ({fs_msg})")
+                stg_ok, stg_msg = _storage_status()
+                if stg_ok:
+                    st.caption(f"Media storage: {stg_msg}")
+                else:
+                    st.caption(f"Media storage: unavailable ({stg_msg})")
                 current = load_thought()
                 new_text = st.text_area(
                     "Latest thought",
@@ -1597,6 +1803,7 @@ def render_sidebar_admin() -> None:
                                 f"{item.get('latest_thought', '')}"
                             )
             else:
+                st.session_state.admin_unlocked = False
                 st.error("Incorrect password.")
         st.markdown("---")
         st.caption(

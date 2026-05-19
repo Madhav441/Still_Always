@@ -11,7 +11,7 @@ This is a polished, deploy-ready Streamlit project. It runs out of the box with 
 ## What's inside
 
 - **Hero section** with cinematic gradient + glass card
-- **Photo gallery** that reads from `assets/photos/` and/or a `PHOTO_URLS` list
+- **Photo gallery** that reads from `assets/photos/`, `PHOTO_URLS`, and optional Firebase-hosted memories uploaded by admin
 - **Sticky "Current thought" ticker** at the bottom, backed by local files plus optional Firestore persistence for redeploy-safe storage
 - **Timeline / "The promise"** cards
 - **Interactive bits**: shuffleable quote, vibe link, expandable tiny letter
@@ -84,6 +84,8 @@ If Firestore is configured, the app also:
 - Writes back the newest thought to Firestore when needed
 - Saves each admin update to Firestore and local files
 
+If Firebase Storage is also configured, admins can upload new memory images directly from the main Memories section after logging in.
+
 ---
 
 ## Configure secrets (optional)
@@ -115,11 +117,29 @@ auth_uri = "https://accounts.google.com/o/oauth2/auth"
 token_uri = "https://oauth2.googleapis.com/token"
 auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
 client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/..."
+
+FIREBASE_STORAGE_BUCKET = "still-always.firebasestorage.app"
+MEMORIES_COLLECTION = "memories"
 ```
 
 Minimum Firestore permissions needed for that service account:
 - Read/write one document in the chosen collection
 - Create documents in the document's `history` subcollection
+
+Minimum Firebase Storage permissions needed:
+- Upload objects under `memories/images/*`
+- Read bucket metadata
+- (Optional) Delete object if Firestore metadata write fails
+
+In Google Cloud IAM, a practical setup is:
+- `Cloud Datastore User` (Firestore)
+- `Storage Object Admin` (Storage object uploads/deletes)
+
+Firebase-side setup checklist:
+1. Firestore database `(default)` exists and is active
+2. Firebase Storage bucket exists in the project
+3. Service account key in Streamlit Secrets belongs to the same project
+4. App is redeployed after updating secrets
 
 For **local development**, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill it in. That file is gitignored.
 
@@ -174,7 +194,7 @@ That's it. The app will install `requirements.txt` and boot.
 ```
 .
 ├── app.py                      # The Streamlit app
-├── requirements.txt            # streamlit, requests, Pillow, Firestore client
+├── requirements.txt            # streamlit, requests, Pillow, Firestore + Storage clients
 ├── thoughts.json               # Latest "current thought" + timestamp (primary)
 ├── thoughts_cache.json         # Mirror cache used for recovery
 ├── thoughts_log.jsonl          # Append-only ticker history/recovery log
