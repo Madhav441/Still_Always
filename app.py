@@ -1065,6 +1065,22 @@ def _write_firestore_record(record: dict, event: str) -> bool:
         return False
 
 
+def _firestore_status() -> tuple[bool, str]:
+    """Return whether Firestore is reachable plus a short status message."""
+    if not HAS_FIRESTORE:
+        return False, "Firestore client package not installed"
+    if not _is_firestore_configured():
+        return False, "Firestore secrets not configured"
+    ref = _firestore_doc_ref()
+    if ref is None:
+        return False, "Unable to build Firestore document reference"
+    try:
+        ref.get()
+        return True, f"Connected ({_firestore_collection_name()}/{_firestore_document_name()})"
+    except Exception as exc:
+        return False, f"Firestore unavailable: {type(exc).__name__}"
+
+
 def _load_log_records() -> List[dict]:
     records: List[dict] = []
     if not THOUGHTS_LOG_FILE.exists():
@@ -1178,8 +1194,10 @@ def save_thought(text: str) -> dict:
         "updated_at_local": _to_local_display(updated_at_utc),
     }
     _sync_primary_and_cache(payload)
-    _write_firestore_record(payload, "save")
+    firestore_saved = _write_firestore_record(payload, "save")
     _append_log_entry("save", payload)
+    payload["persisted_to_firestore"] = firestore_saved
+    payload["persisted_backend"] = "firestore+local" if firestore_saved else "local-only"
     return payload
 
 
@@ -1532,6 +1550,11 @@ def render_sidebar_admin() -> None:
         if pwd:
             if pwd == expected:
                 st.success("Unlocked.")
+                fs_ok, fs_msg = _firestore_status()
+                if fs_ok:
+                    st.caption(f"Storage backend: {fs_msg}")
+                else:
+                    st.caption(f"Storage backend: local fallback ({fs_msg})")
                 current = load_thought()
                 new_text = st.text_area(
                     "Latest thought",
@@ -1545,6 +1568,10 @@ def render_sidebar_admin() -> None:
                         current = saved
                         st.success("Saved.")
                         st.caption(f"Cached at {saved.get('updated_at_local', '')}")
+                        if saved.get("persisted_to_firestore"):
+                            st.caption("Persisted to Firestore and local cache.")
+                        else:
+                            st.warning("Saved locally only. Firestore write failed or is not configured.")
                         # Streamlit will rerender; the ticker reads from disk.
                     else:
                         st.warning("Empty thoughts don't get saved.")
