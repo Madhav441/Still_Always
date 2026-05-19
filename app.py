@@ -21,6 +21,11 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+
 import streamlit as st
 
 # Pillow is used to downscale + recompress local photos before inlining them
@@ -42,6 +47,9 @@ INSTAGRAM_URL = "https://www.instagram.com/breadbastket?igsh=c2sya3kycjcwZWZk"
 DISCORD_INVITE_URL = "https://discord.gg/tZPh377qeP"
 WHATSAPP_URL = "https://wa.me/61416232736"
 SPOTIFY_OR_YOUTUBE_URL = "https://music.youtube.com/playlist?list=PL6H4rqMvHT-H8h6ORnTMFQJqXM4Z1pz6h&si=yt35oKTsnGLTdNIE"
+
+# Ticker/admin timestamps are shown in this timezone.
+APP_TIMEZONE = "Australia/Sydney"
 
 # Optional direct image URLs. These render alongside any local photos found
 # in assets/photos. Use direct image links (ending in .jpg/.png/.webp), e.g.
@@ -795,8 +803,34 @@ DEFAULT_THOUGHT = {
 }
 
 
+def _get_app_timezone():
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(APP_TIMEZONE)
+        except Exception:
+            pass
+    local_tz = datetime.now().astimezone().tzinfo
+    return local_tz if local_tz is not None else timezone.utc
+
+
+def _local_today_str() -> str:
+    return datetime.now(_get_app_timezone()).date().isoformat()
+
+
 def _iso_utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _to_local_display(utc_iso: str) -> str:
+    """Format an ISO UTC timestamp in APP_TIMEZONE for UI display."""
+    try:
+        parsed = datetime.fromisoformat(str(utc_iso).strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        local_dt = parsed.astimezone(_get_app_timezone())
+        return local_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+    except Exception:
+        return ""
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -828,7 +862,7 @@ def _normalize_thought_record(data: Optional[dict]) -> Optional[dict]:
     text = str(data.get("latest_thought", "")).strip()
     if not text:
         return None
-    updated_at = str(data.get("updated_at") or date.today())
+    updated_at = str(data.get("updated_at") or _local_today_str())
     updated_at_utc = str(data.get("updated_at_utc") or "").strip()
     if not updated_at_utc:
         updated_at_utc = f"{updated_at}T00:00:00+00:00"
@@ -843,10 +877,12 @@ def _normalize_thought_record(data: Optional[dict]) -> Optional[dict]:
             updated_at_utc = f"{updated_at}T00:00:00+00:00"
     except Exception:
         updated_at_utc = f"{updated_at}T00:00:00+00:00"
+    updated_at_local = str(data.get("updated_at_local") or "").strip() or _to_local_display(updated_at_utc)
     return {
         "latest_thought": text,
         "updated_at": updated_at,
         "updated_at_utc": updated_at_utc,
+        "updated_at_local": updated_at_local,
     }
 
 
@@ -973,10 +1009,12 @@ def load_thought() -> dict:
 
 def save_thought(text: str) -> dict:
     """Persist thought to primary file, cache mirror, and append-only log."""
+    updated_at_utc = _iso_utc_now()
     payload = {
         "latest_thought": text.strip(),
-        "updated_at": str(date.today()),
-        "updated_at_utc": _iso_utc_now(),
+        "updated_at": _local_today_str(),
+        "updated_at_utc": updated_at_utc,
+        "updated_at_local": _to_local_display(updated_at_utc),
     }
     _sync_primary_and_cache(payload)
     _append_log_entry("save", payload)
@@ -1306,7 +1344,7 @@ def render_ticker() -> None:
     """Render the sticky bottom 'Current thought' marquee."""
     thought = load_thought()
     text = thought.get("latest_thought", "").strip() or DEFAULT_THOUGHT["latest_thought"]
-    updated = thought.get("updated_at", "")
+    updated = thought.get("updated_at_local", "") or thought.get("updated_at", "")
     safe_text = (text.replace("<", "&lt;").replace(">", "&gt;"))
     st.markdown(
         f"""
@@ -1344,11 +1382,13 @@ def render_sidebar_admin() -> None:
                         saved = save_thought(new_text)
                         current = saved
                         st.success("Saved.")
-                        st.caption(f"Cached at {saved.get('updated_at_utc', '')}")
+                        st.caption(f"Cached at {saved.get('updated_at_local', '')}")
                         # Streamlit will rerender; the ticker reads from disk.
                     else:
                         st.warning("Empty thoughts don't get saved.")
-                st.caption(f"Last updated: {current.get('updated_at', '')}")
+                st.caption(
+                    f"Last updated: {current.get('updated_at_local', '') or current.get('updated_at', '')}"
+                )
                 with st.expander("Recent cached messages"):
                     history = get_cached_message_history(limit=8)
                     if not history:
@@ -1356,7 +1396,8 @@ def render_sidebar_admin() -> None:
                     else:
                         for item in reversed(history):
                             st.write(
-                                f"{item.get('updated_at_utc', '')} - {item.get('latest_thought', '')}"
+                                f"{item.get('updated_at_local', '') or item.get('updated_at', '')} - "
+                                f"{item.get('latest_thought', '')}"
                             )
             else:
                 st.error("Incorrect password.")
