@@ -890,6 +890,11 @@ def _load_log_records() -> List[dict]:
     return records
 
 
+def _record_datetime_utc(record: dict) -> datetime:
+    """Best-effort UTC datetime extraction for record ordering."""
+    return _record_sort_key(record)
+
+
 def _last_log_record() -> Optional[dict]:
     records = _load_log_records()
     return records[-1] if records else None
@@ -901,17 +906,36 @@ def _sync_primary_and_cache(record: dict) -> None:
     _atomic_write_json(THOUGHTS_CACHE_FILE, record)
 
 
+def _choose_latest_record(primary: Optional[dict], cache: Optional[dict], log_records: List[dict]) -> Optional[dict]:
+    """Choose latest record with deterministic tie-breakers.
+
+    Tie-breaking precedence (latest wins):
+    1) newer UTC timestamp
+    2) source priority: log > cache > primary
+    3) log sequence (later line wins)
+    """
+    ranked: List[tuple[datetime, int, int, dict]] = []
+
+    if primary:
+        ranked.append((_record_datetime_utc(primary), 1, 0, primary))
+    if cache:
+        ranked.append((_record_datetime_utc(cache), 2, 0, cache))
+    for idx, record in enumerate(log_records):
+        ranked.append((_record_datetime_utc(record), 3, idx, record))
+
+    if not ranked:
+        return None
+    return max(ranked, key=lambda item: (item[0], item[1], item[2]))[3]
+
+
 def reconcile_thought_storage() -> dict:
     """Recover latest thought from primary file, cache mirror, or log history."""
-    candidates: List[dict] = []
-    for path in (THOUGHTS_FILE, THOUGHTS_CACHE_FILE):
-        record = _normalize_thought_record(_read_json_if_exists(path))
-        if record:
-            candidates.append(record)
-    candidates.extend(_load_log_records())
+    primary_record = _normalize_thought_record(_read_json_if_exists(THOUGHTS_FILE))
+    cache_record = _normalize_thought_record(_read_json_if_exists(THOUGHTS_CACHE_FILE))
+    log_records = _load_log_records()
 
-    if candidates:
-        latest = max(candidates, key=_record_sort_key)
+    latest = _choose_latest_record(primary_record, cache_record, log_records)
+    if latest:
         _sync_primary_and_cache(latest)
         # Only append when startup recovery promoted a different record.
         if _last_log_record() != latest:
