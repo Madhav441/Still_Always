@@ -17,7 +17,7 @@ import base64
 import io
 import json
 import random
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -145,7 +145,7 @@ st.set_page_config(
     page_title="Still, Always.",
     page_icon="✨",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 
@@ -832,6 +832,17 @@ def _normalize_thought_record(data: Optional[dict]) -> Optional[dict]:
     updated_at_utc = str(data.get("updated_at_utc") or "").strip()
     if not updated_at_utc:
         updated_at_utc = f"{updated_at}T00:00:00+00:00"
+    # Guard against poisoned future timestamps that can pin reconciliation
+    # to an old message forever (e.g. manually seeded bootstrap values).
+    try:
+        parsed = datetime.fromisoformat(updated_at_utc.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.astimezone(timezone.utc)
+        if parsed > datetime.now(timezone.utc) + timedelta(minutes=5):
+            updated_at_utc = f"{updated_at}T00:00:00+00:00"
+    except Exception:
+        updated_at_utc = f"{updated_at}T00:00:00+00:00"
     return {
         "latest_thought": text,
         "updated_at": updated_at,
@@ -1331,6 +1342,7 @@ def render_sidebar_admin() -> None:
                 if st.button("Save thought", key="admin_save"):
                     if new_text.strip():
                         saved = save_thought(new_text)
+                        current = saved
                         st.success("Saved.")
                         st.caption(f"Cached at {saved.get('updated_at_utc', '')}")
                         # Streamlit will rerender; the ticker reads from disk.
