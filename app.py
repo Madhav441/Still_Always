@@ -1741,6 +1741,7 @@ def render_gallery() -> None:
 
     # Build uniform cards for both local files and URL photos so the strip
     # has a consistent rhythm regardless of where the image came from.
+    memory_cards: List[str] = []
     cards: List[str] = []
 
     def _card(src: str, cap: str, media_type: str = "image") -> str:
@@ -1777,7 +1778,9 @@ def render_gallery() -> None:
             str(memory.get("caption", "")).strip()
             or caption_from_filename(str(memory.get("storage_path", "") or memory.get("media_url", "")))
         )
-        cards.insert(0, _card(src, cap, media_type=media_type))
+        memory_cards.append(_card(src, cap, media_type=media_type))
+
+    cards = memory_cards + cards
 
     if not cards:
         # Elegant empty state with placeholder cards.
