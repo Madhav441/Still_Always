@@ -84,7 +84,7 @@ If Firestore is configured, the app also:
 - Writes back the newest thought to Firestore when needed
 - Saves each admin update to Firestore and local files
 
-If Firebase Storage is also configured, admins can upload new memory images directly from the main Memories section after logging in.
+If Cloudinary is configured, admins can upload new memory images/videos directly from the main Memories section after logging in.
 
 ---
 
@@ -120,18 +120,28 @@ client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/..."
 
 FIREBASE_STORAGE_BUCKET = "your-actual-bucket-name"
 MEMORIES_COLLECTION = "memories"
+
+CLOUDINARY_CLOUD_NAME = "your-cloud-name"
+CLOUDINARY_UPLOAD_PRESET = "your-unsigned-upload-preset"
+CLOUDINARY_FOLDER = "still-always/memories"   # optional
 ```
 
+Cloudinary media setup (recommended on free plans):
+1. In Cloudinary console, create an **unsigned upload preset**.
+2. Set `CLOUDINARY_CLOUD_NAME` and `CLOUDINARY_UPLOAD_PRESET` in Streamlit secrets.
+3. Uploads from the admin Memories section will go to Cloudinary.
+4. Use **Migrate local assets to Cloudinary** in the admin Memories panel to bulk-import everything from `assets/photos/`.
+
+Firebase Storage is optional fallback only.
 For `FIREBASE_STORAGE_BUCKET`, copy the exact bucket name shown in Firebase Storage settings.
 Common values are either `your-project-id.appspot.com` or `your-project-id.firebasestorage.app`.
-If omitted, the app will try both patterns automatically.
 
 Minimum Firestore permissions needed for that service account:
 - Read/write one document in the chosen collection
 - Create documents in the document's `history` subcollection
 
 Minimum Firebase Storage permissions needed:
-- Upload objects under `memories/images/*`
+- Upload objects under `memories/images/*` and `memories/videos/*`
 - Read bucket metadata
 - (Optional) Delete object if Firestore metadata write fails
 

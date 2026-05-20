@@ -16,7 +16,9 @@ from __future__ import annotations
 import base64
 import io
 import json
+import mimetypes
 import random
+import requests
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -72,6 +74,7 @@ APP_TIMEZONE = "Australia/Sydney"
 FIRESTORE_COLLECTION_DEFAULT = "still_always"
 FIRESTORE_DOCUMENT_DEFAULT = "ticker"
 MEMORIES_COLLECTION_DEFAULT = "memories"
+CLOUDINARY_FOLDER_DEFAULT = "still-always/memories"
 
 # Optional direct image URLs. These render alongside any local photos found
 # in assets/photos. Use direct image links (ending in .jpg/.png/.webp), e.g.
@@ -589,6 +592,13 @@ def inject_css() -> None:
             display: block;
             transition: transform 0.7s ease;
         }
+        .gallery-card video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            background: #120b0f;
+        }
         .gallery-card:hover {
             transform: translateY(-3px);
             box-shadow: 0 22px 44px -18px rgba(0,0,0,0.6);
@@ -948,6 +958,17 @@ def _firestore_project_id() -> str:
     return str(_get_fire_config_value("FIRESTORE_PROJECT_ID", "")).strip()
 
 
+def _resolved_project_id() -> str:
+    """Resolve project id from explicit secret first, then service account."""
+    explicit = _firestore_project_id()
+    if explicit:
+        return explicit
+    info = _firestore_service_account_info()
+    if isinstance(info, dict):
+        return str(info.get("project_id", "")).strip()
+    return ""
+
+
 def _firestore_collection_name() -> str:
     value = str(_get_fire_config_value("FIRESTORE_COLLECTION", FIRESTORE_COLLECTION_DEFAULT)).strip()
     return value or FIRESTORE_COLLECTION_DEFAULT
@@ -963,11 +984,28 @@ def _memories_collection_name() -> str:
     return value or MEMORIES_COLLECTION_DEFAULT
 
 
+def _cloudinary_cloud_name() -> str:
+    return str(_get_fire_config_value("CLOUDINARY_CLOUD_NAME", "")).strip()
+
+
+def _cloudinary_upload_preset() -> str:
+    return str(_get_fire_config_value("CLOUDINARY_UPLOAD_PRESET", "")).strip()
+
+
+def _cloudinary_folder() -> str:
+    value = str(_get_fire_config_value("CLOUDINARY_FOLDER", CLOUDINARY_FOLDER_DEFAULT)).strip()
+    return value or CLOUDINARY_FOLDER_DEFAULT
+
+
+def _is_cloudinary_configured() -> bool:
+    return bool(_cloudinary_cloud_name() and _cloudinary_upload_preset())
+
+
 def _storage_bucket_name() -> str:
     explicit = str(_get_fire_config_value("FIREBASE_STORAGE_BUCKET", "")).strip()
     if explicit:
         return explicit
-    project_id = _firestore_project_id()
+    project_id = _resolved_project_id()
     if project_id:
         return f"{project_id}.firebasestorage.app"
     return ""
@@ -976,7 +1014,7 @@ def _storage_bucket_name() -> str:
 def _candidate_storage_bucket_names() -> List[str]:
     names: List[str] = []
     explicit = str(_get_fire_config_value("FIREBASE_STORAGE_BUCKET", "")).strip()
-    project_id = _firestore_project_id()
+    project_id = _resolved_project_id()
     if explicit:
         names.append(explicit)
     if project_id:
@@ -1071,7 +1109,7 @@ def _get_storage_client_cached(
 def _get_firestore_client():
     if not _is_firestore_configured():
         return None
-    project_id = _firestore_project_id()
+    project_id = _resolved_project_id()
     service_account_info = _firestore_service_account_info()
     service_account_json = (
         json.dumps(service_account_info, ensure_ascii=False)
@@ -1084,7 +1122,7 @@ def _get_firestore_client():
 def _get_storage_client():
     if not HAS_STORAGE:
         return None
-    project_id = _firestore_project_id()
+    project_id = _resolved_project_id()
     service_account_info = _firestore_service_account_info()
     service_account_json = (
         json.dumps(service_account_info, ensure_ascii=False)
@@ -1145,7 +1183,7 @@ def _list_memory_records(limit: int = 120) -> List[dict]:
         rows = []
         for doc in query.stream():
             data = doc.to_dict() or {}
-            if data.get("type") == "image":
+            if data.get("type") in {"image", "video"}:
                 data["id"] = doc.id
                 rows.append(data)
         return rows
@@ -1168,6 +1206,13 @@ def _build_signed_media_url(storage_path: str, ttl_minutes: int = 120) -> str:
         return ""
 
 
+def _memory_media_url(memory: dict) -> str:
+    url = str(memory.get("media_url", "")).strip()
+    if url:
+        return url
+    return _build_signed_media_url(str(memory.get("storage_path", "")))
+
+
 def _write_memory_record(record: dict) -> tuple[bool, str]:
     client = _get_firestore_client()
     if client is None:
@@ -1179,19 +1224,186 @@ def _write_memory_record(record: dict) -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {exc}"
 
 
-def _upload_memory_image(uploaded_file, caption: str) -> tuple[bool, str]:
+def _upload_to_cloudinary(uploaded_file, media_type: str) -> tuple[bool, str, Optional[dict]]:
+    if not _is_cloudinary_configured():
+        return False, "Cloudinary is not configured", None
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+    file_bytes = uploaded_file.getvalue()
+    content_type = getattr(uploaded_file, "type", None) or "application/octet-stream"
+    ok, msg, payload = _upload_bytes_to_cloudinary(
+        file_name=str(getattr(uploaded_file, "name", "memory")),
+        file_bytes=file_bytes,
+        content_type=content_type,
+        media_type=media_type,
+    )
+    if not ok or payload is None:
+        return False, msg, None
+    secure_url = str(payload.get("secure_url", "")).strip()
+    resource_type = "video" if media_type == "video" else "image"
+    return True, msg, {
+        "provider": "cloudinary",
+        "media_url": secure_url,
+        "public_id": payload.get("public_id", ""),
+        "resource_type": payload.get("resource_type", resource_type),
+        "bytes": payload.get("bytes", 0),
+        "format": payload.get("format", ""),
+    }
+
+
+def _upload_bytes_to_cloudinary(
+    file_name: str,
+    file_bytes: bytes,
+    content_type: str,
+    media_type: str,
+) -> tuple[bool, str, Optional[dict]]:
+    if not _is_cloudinary_configured():
+        return False, "Cloudinary is not configured", None
+    cloud_name = _cloudinary_cloud_name()
+    preset = _cloudinary_upload_preset()
+    folder = _cloudinary_folder()
+    resource_type = "video" if media_type == "video" else "image"
+    endpoint = f"https://api.cloudinary.com/v1_1/{cloud_name}/{resource_type}/upload"
+
+    try:
+        response = requests.post(
+            endpoint,
+            data={"upload_preset": preset, "folder": folder},
+            files={"file": (file_name, file_bytes, content_type or "application/octet-stream")},
+            timeout=60,
+        )
+    except Exception as exc:
+        return False, f"Cloudinary upload failed: {type(exc).__name__}: {exc}", None
+
+    if response.status_code >= 400:
+        return False, f"Cloudinary upload failed: {response.status_code} {response.text}", None
+
+    try:
+        payload = response.json()
+    except Exception:
+        return False, "Cloudinary upload failed: invalid JSON response", None
+
+    secure_url = str(payload.get("secure_url", "")).strip()
+    if not secure_url:
+        return False, "Cloudinary upload failed: missing secure_url", None
+    return True, "Uploaded to Cloudinary", payload
+
+
+def _migrate_local_assets_to_cloudinary() -> tuple[bool, str]:
+    if not _is_cloudinary_configured():
+        return False, "Cloudinary is not configured"
+
+    local_photos = load_local_photos()
+    if not local_photos:
+        return True, "No local photos found in assets/photos"
+
+    existing_names = {
+        str(row.get("source_local_name", "")).strip().lower()
+        for row in _list_memory_records(limit=5000)
+        if str(row.get("source_local_name", "")).strip()
+    }
+
+    uploaded = 0
+    skipped = 0
+    failed = 0
+    errors: List[str] = []
+
+    for photo in local_photos:
+        name_key = photo.name.strip().lower()
+        if name_key in existing_names:
+            skipped += 1
+            continue
+
+        try:
+            file_bytes = photo.read_bytes()
+        except Exception as exc:
+            failed += 1
+            errors.append(f"{photo.name}: read failed ({type(exc).__name__})")
+            continue
+
+        content_type = mimetypes.guess_type(photo.name)[0] or "application/octet-stream"
+        ok_cloud, msg_cloud, payload = _upload_bytes_to_cloudinary(
+            file_name=photo.name,
+            file_bytes=file_bytes,
+            content_type=content_type,
+            media_type="image",
+        )
+        if not ok_cloud or payload is None:
+            failed += 1
+            errors.append(f"{photo.name}: {msg_cloud}")
+            continue
+
+        created_utc = _iso_utc_now()
+        memory_record = {
+            "type": "image",
+            "caption": caption_from_filename(photo.name),
+            "created_at_utc": created_utc,
+            "created_at_local": _to_local_display(created_utc),
+            "provider": "cloudinary",
+            "media_url": payload.get("secure_url", ""),
+            "public_id": payload.get("public_id", ""),
+            "resource_type": payload.get("resource_type", "image"),
+            "bytes": payload.get("bytes", 0),
+            "format": payload.get("format", ""),
+            "source_local_name": photo.name,
+            "source_local_path": f"assets/photos/{photo.name}",
+        }
+        ok_meta, msg_meta = _write_memory_record(memory_record)
+        if not ok_meta:
+            failed += 1
+            errors.append(f"{photo.name}: metadata write failed ({msg_meta})")
+            continue
+
+        uploaded += 1
+        existing_names.add(name_key)
+
+    summary = f"Migration complete: uploaded {uploaded}, skipped {skipped}, failed {failed}."
+    if errors:
+        # Keep message concise for Streamlit sidebar/panel rendering.
+        preview = " | ".join(errors[:3])
+        if len(errors) > 3:
+            preview += f" | +{len(errors) - 3} more"
+        summary = f"{summary} Errors: {preview}"
+    return failed == 0, summary
+
+
+def _upload_memory_asset(uploaded_file, caption: str) -> tuple[bool, str]:
     if uploaded_file is None:
-        return False, "No image selected"
+        return False, "No file selected"
+
+    mime = str(getattr(uploaded_file, "type", "") or "").lower()
+    media_type = "video" if mime.startswith("video/") else "image"
+    created_utc = _iso_utc_now()
+
+    if _is_cloudinary_configured():
+        ok_cloud, msg_cloud, cloud_data = _upload_to_cloudinary(uploaded_file, media_type)
+        if not ok_cloud or not cloud_data:
+            return False, msg_cloud
+        memory_record = {
+            "type": media_type,
+            "caption": str(caption or "").strip(),
+            "created_at_utc": created_utc,
+            "created_at_local": _to_local_display(created_utc),
+            **cloud_data,
+        }
+        ok_meta, msg_meta = _write_memory_record(memory_record)
+        if not ok_meta:
+            return False, f"Upload succeeded but metadata write failed: {msg_meta}"
+        return True, f"{media_type.capitalize()} uploaded to Cloudinary and indexed in Firestore"
+
+    # Fallback to Firebase Storage when Cloudinary is not configured.
     if not HAS_STORAGE:
-        return False, "google-cloud-storage package is not installed"
+        return False, "Cloudinary not configured and Storage client package is not installed"
     bucket = _storage_bucket()
     if bucket is None:
-        return False, "Firebase Storage is not configured"
+        return False, "Cloudinary not configured and Firebase Storage is not available"
 
     original_name = Path(str(uploaded_file.name or "memory")).name
     safe_name = "".join(ch for ch in original_name if ch.isalnum() or ch in {".", "_", "-"}) or "memory"
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    storage_path = f"memories/images/{ts}_{safe_name}"
+    storage_path = f"memories/{media_type}s/{ts}_{safe_name}"
 
     try:
         blob = bucket.blob(storage_path)
@@ -1203,22 +1415,22 @@ def _upload_memory_image(uploaded_file, caption: str) -> tuple[bool, str]:
     except Exception as exc:
         return False, f"Storage upload failed: {type(exc).__name__}: {exc}"
 
-    created_utc = _iso_utc_now()
     memory_record = {
-        "type": "image",
+        "type": media_type,
         "caption": str(caption or "").strip(),
         "storage_path": storage_path,
+        "provider": "firebase_storage",
         "created_at_utc": created_utc,
         "created_at_local": _to_local_display(created_utc),
     }
-    ok, msg = _write_memory_record(memory_record)
-    if not ok:
+    ok_meta, msg_meta = _write_memory_record(memory_record)
+    if not ok_meta:
         try:
             blob.delete()
         except Exception:
             pass
-        return False, f"Upload rolled back: {msg}"
-    return True, "Image uploaded to Firebase Storage and indexed in Firestore"
+        return False, f"Upload rolled back: {msg_meta}"
+    return True, f"{media_type.capitalize()} uploaded to Firebase Storage and indexed in Firestore"
 
 
 def _write_firestore_record(record: dict, event: str) -> tuple[bool, str]:
@@ -1275,6 +1487,15 @@ def _storage_status() -> tuple[bool, str]:
         return True, f"Connected ({bucket.name})"
     except Exception as exc:
         return False, f"Storage unavailable: {type(exc).__name__}: {exc}"
+
+
+def _media_backend_status() -> tuple[bool, str]:
+    if _is_cloudinary_configured():
+        return True, f"Cloudinary configured ({_cloudinary_cloud_name()})"
+    stg_ok, stg_msg = _storage_status()
+    if stg_ok:
+        return True, f"Firebase Storage fallback ({stg_msg})"
+    return False, f"Unavailable (Cloudinary not configured; {stg_msg})"
 
 
 def _load_log_records() -> List[dict]:
@@ -1505,7 +1726,8 @@ def render_gallery() -> None:
 
     local_photos = load_local_photos()
     url_photos = [u for u in PHOTO_URLS if isinstance(u, str) and u.strip()]
-    total = len(local_photos) + len(url_photos)
+    memory_records = _list_memory_records(limit=120)
+    total = len(local_photos) + len(url_photos) + len(memory_records)
 
     st.markdown(
         f'<div class="section-title">The gallery '
@@ -1517,31 +1739,21 @@ def render_gallery() -> None:
         unsafe_allow_html=True,
     )
 
-    if total == 0:
-        # Elegant empty state with placeholder cards.
-        st.markdown(
-            '<div class="gallery-grid">'
-            + "".join(
-                [
-                    '<div class="placeholder-card">Drop photos into<br/><code>assets/photos/</code><br/>to see them here.</div>'
-                ]
-                * 6
-            )
-            + "</div>",
-            unsafe_allow_html=True,
-        )
-        return
-
     # Build uniform cards for both local files and URL photos so the strip
     # has a consistent rhythm regardless of where the image came from.
     cards: List[str] = []
 
-    def _card(src: str, cap: str) -> str:
+    def _card(src: str, cap: str, media_type: str = "image") -> str:
         safe_cap = cap.replace("<", "&lt;").replace(">", "&gt;")
         caption_html = f'<div class="photo-caption">{safe_cap}</div>' if safe_cap else ""
+        media_html = (
+            f'<video src="{src}" controls preload="metadata" playsinline></video>'
+            if media_type == "video"
+            else f'<img src="{src}" alt="{safe_cap}" loading="lazy"/>'
+        )
         return (
             '<div class="gallery-card">'
-            f'<img src="{src}" alt="{safe_cap}" loading="lazy"/>'
+            f"{media_html}"
             f"{caption_html}"
             "</div>"
         )
@@ -1556,12 +1768,31 @@ def render_gallery() -> None:
         cards.append(_card(u, caption_from_filename(u)))
 
     # Firestore-backed memories (uploaded by admin) are rendered first.
-    for memory in _list_memory_records(limit=120):
-        src = _build_signed_media_url(str(memory.get("storage_path", "")))
+    for memory in memory_records:
+        src = _memory_media_url(memory)
         if not src:
             continue
-        cap = str(memory.get("caption", "")).strip() or caption_from_filename(str(memory.get("storage_path", "")))
-        cards.insert(0, _card(src, cap))
+        media_type = str(memory.get("type", "image")).strip().lower()
+        cap = (
+            str(memory.get("caption", "")).strip()
+            or caption_from_filename(str(memory.get("storage_path", "") or memory.get("media_url", "")))
+        )
+        cards.insert(0, _card(src, cap, media_type=media_type))
+
+    if not cards:
+        # Elegant empty state with placeholder cards.
+        st.markdown(
+            '<div class="gallery-grid">'
+            + "".join(
+                [
+                    '<div class="placeholder-card">Upload memories as photos or videos from the admin section.</div>'
+                ]
+                * 6
+            )
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+        return
 
     st.markdown(
         '<div class="scroll-hint"><span class="dot"></span>scroll &middot; swipe &middot; browse</div>'
@@ -1572,16 +1803,24 @@ def render_gallery() -> None:
     if st.session_state.get("admin_unlocked", False):
         st.markdown("<div style='height:1.2rem;'></div>", unsafe_allow_html=True)
         st.markdown("#### Admin upload")
-        st.caption("Upload images directly to Firebase Storage. They will appear in this memories section.")
+        st.caption("Upload images or videos. Cloudinary is used when configured; Firebase Storage is fallback.")
+        if st.button("Migrate local assets to Cloudinary", key="memory_migrate_btn"):
+            with st.spinner("Migrating local assets..."):
+                ok_migrate, msg_migrate = _migrate_local_assets_to_cloudinary()
+            if ok_migrate:
+                st.success(msg_migrate)
+                st.rerun()
+            else:
+                st.warning(msg_migrate)
         uploaded = st.file_uploader(
-            "Upload memory image",
-            type=["jpg", "jpeg", "png", "webp"],
+            "Upload memory media",
+            type=["jpg", "jpeg", "png", "webp", "mp4", "mov", "webm", "m4v"],
             accept_multiple_files=False,
             key="memory_upload_file",
         )
         caption = st.text_input("Caption (optional)", key="memory_upload_caption")
-        if st.button("Upload image", key="memory_upload_btn"):
-            ok, msg = _upload_memory_image(uploaded, caption)
+        if st.button("Upload memory", key="memory_upload_btn"):
+            ok, msg = _upload_memory_asset(uploaded, caption)
             if ok:
                 st.success(msg)
                 st.rerun()
@@ -1782,7 +2021,7 @@ def render_sidebar_admin() -> None:
                     st.caption(f"Storage backend: {fs_msg}")
                 else:
                     st.caption(f"Storage backend: local fallback ({fs_msg})")
-                stg_ok, stg_msg = _storage_status()
+                stg_ok, stg_msg = _media_backend_status()
                 if stg_ok:
                     st.caption(f"Media storage: {stg_msg}")
                 else:
